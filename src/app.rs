@@ -15,6 +15,7 @@ use crate::{
     http_proxy::handle_proxy,
     replay::handle_mock_proxy,
     types::{AppState, Args, GatewayState, ProfileConfig},
+    util::append_access_log_line,
     websocket_proxy::{prepare_websocket_proxy, run_websocket_proxy},
 };
 
@@ -36,6 +37,7 @@ pub async fn run() -> anyhow::Result<()> {
         .build()
         .context("build upstream HTTP client")?;
     let profile_root = default_profile_root();
+    let access_log_path = profile_root.join("access.log");
     let profiles = load_profiles(&profile_root).await?;
 
     fs::create_dir_all(&profile_root)
@@ -45,6 +47,7 @@ pub async fn run() -> anyhow::Result<()> {
     let state = GatewayState {
         client,
         output_root: profile_root,
+        access_log_path,
         profiles: std::sync::Arc::new(profiles),
         session_header,
         unsafe_record_secrets: args.unsafe_record_secrets,
@@ -68,6 +71,9 @@ pub async fn run() -> anyhow::Result<()> {
         profile_root = %state.output_root.display(),
         session_header = %state.session_header,
         strip_responses_lite = state.strip_responses_lite,
+        http_proxy = ?std::env::var("HTTP_PROXY").ok(),
+        https_proxy = ?std::env::var("HTTPS_PROXY").ok(),
+        all_proxy = ?std::env::var("ALL_PROXY").ok(),
         "recorder listening"
     );
 
@@ -190,6 +196,21 @@ pub async fn proxy(
     AxumPath((profile, path)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Response {
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("-");
+    let access_line = format!(
+        "{} method={} uri={} profile={} path=/{path} ua={user_agent}\n",
+        crate::util::now_rfc3339(),
+        method,
+        uri,
+        profile,
+    );
+    if let Err(err) = append_access_log_line(&state.access_log_path, &access_line).await {
+        warn!(?err, path = %state.access_log_path.display(), "failed to append access log");
+    }
+
     let state = match resolve_profile(&state, &profile) {
         Ok(state) => state,
         Err(err) => return (StatusCode::NOT_FOUND, err.to_string()).into_response(),

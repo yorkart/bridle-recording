@@ -39,6 +39,18 @@ pub async fn handle_proxy(
 ) -> anyhow::Result<Response> {
     let started_at = now_rfc3339();
     let (session_id, session_source) = session_from_headers(&headers, &state.session_header);
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("-");
+    tracing::info!(
+        profile = %state.profile.name,
+        method = %method,
+        path = %format!("/{path}"),
+        session_id = %session_id,
+        user_agent = %user_agent,
+        "received http proxy request"
+    );
     let index = next_request_index(&state, &session_id).await?;
     let request_dir = request_dir(&state.output_dir, &session_id, index);
     fs::create_dir_all(&request_dir)
@@ -182,6 +194,12 @@ async fn send_upstream_with_retry(
                         attempt,
                         max_attempts = UPSTREAM_MAX_ATTEMPTS,
                         error = %err,
+                        error_debug = ?err,
+                        is_timeout = err.is_timeout(),
+                        is_connect = err.is_connect(),
+                        is_request = err.is_request(),
+                        is_status = err.is_status(),
+                        url = ?err.url(),
                         request_dir = %request_dir.display(),
                         profile = %state.profile.name,
                         "retrying upstream request after transport error"
@@ -190,6 +208,20 @@ async fn send_upstream_with_retry(
                     tokio::time::sleep(retry_delay(attempt)).await;
                     continue;
                 }
+                warn!(
+                    attempt,
+                    max_attempts = UPSTREAM_MAX_ATTEMPTS,
+                    error = %err,
+                    error_debug = ?err,
+                    is_timeout = err.is_timeout(),
+                    is_connect = err.is_connect(),
+                    is_request = err.is_request(),
+                    is_status = err.is_status(),
+                    url = ?err.url(),
+                    request_dir = %request_dir.display(),
+                    profile = %state.profile.name,
+                    "upstream request failed after transport error"
+                );
                 return Err(anyhow!(err));
             }
         }

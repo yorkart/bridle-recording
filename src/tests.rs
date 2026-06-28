@@ -647,6 +647,7 @@ fn gateway_test_state(output_root: &Path, upstream: Url) -> GatewayState {
             .build()
             .unwrap(),
         output_root: output_root.to_path_buf(),
+        access_log_path: output_root.join("access.log"),
         profiles: Arc::new(HashMap::from([
             (
                 "codex-http".to_owned(),

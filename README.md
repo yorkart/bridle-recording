@@ -5,7 +5,30 @@ OpenAI-compatible mock endpoint.
 
 ## Start Recorder
 
+If your local shell does not automatically inherit the same proxy settings as
+Codex/Desktop apps, the simplest way to start the recorder is:
+
 ```sh
+./scripts/run-recorder.sh
+```
+
+This script uses:
+
+- `BRIDLE_HOME_ROOT=~/.bridle-recording`
+- `HTTP_PROXY=http://127.0.0.1:7890`
+- `HTTPS_PROXY=http://127.0.0.1:7890`
+- `ALL_PROXY=socks5://127.0.0.1:7890`
+
+You can still override those env vars before running the script if your local
+proxy uses a different port.
+
+Equivalent manual command:
+
+```sh
+HTTP_PROXY=http://127.0.0.1:7890 \
+HTTPS_PROXY=http://127.0.0.1:7890 \
+ALL_PROXY=socks5://127.0.0.1:7890 \
+BRIDLE_HOME_ROOT=~/.bridle-recording \
 cargo run -- \
   --listen 127.0.0.1:8787 \
   --strip-responses-lite
@@ -53,6 +76,17 @@ cp ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
 Then start Codex with that agent home:
 
 ```sh
+./scripts/run-codex-http.sh
+```
+
+The helper script also sets `NO_PROXY=127.0.0.1,localhost` so local traffic to
+`http://127.0.0.1:8787` does not get sent back through your system proxy.
+
+Equivalent manual command:
+
+```sh
+NO_PROXY=127.0.0.1,localhost \
+no_proxy=127.0.0.1,localhost \
 BRIDLE_AGENT_HOME=~/.bridle-recording/codex-http \
 CODEX_HOME=~/.bridle-recording/codex-http \
 codex
@@ -69,6 +103,14 @@ mkdir -p ~/.bridle-recording
 cp -R agent-home/codex-websocket ~/.bridle-recording/
 cp ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
 
+./scripts/run-codex-websocket.sh
+```
+
+Equivalent manual command:
+
+```sh
+NO_PROXY=127.0.0.1,localhost \
+no_proxy=127.0.0.1,localhost \
 BRIDLE_AGENT_HOME=~/.bridle-recording/codex-websocket \
 CODEX_HOME=~/.bridle-recording/codex-websocket \
 codex

@@ -14,7 +14,7 @@ use chrono::Utc;
 use reqwest::Url;
 use sha2::{Digest, Sha256};
 use tokio::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::AsyncWriteExt,
 };
 
@@ -291,6 +291,24 @@ pub async fn next_existing_request_index(output_dir: &Path, session_id: &str) ->
     }
 
     Ok(max_seen.map_or(0, |index| index + 1))
+}
+
+pub async fn append_access_log_line(path: &Path, line: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create access log dir {}", parent.display()))?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .with_context(|| format!("open access log {}", path.display()))?;
+    file.write_all(line.as_bytes())
+        .await
+        .with_context(|| format!("append access log {}", path.display()))?;
+    Ok(())
 }
 
 pub fn headers_to_records(headers: &HeaderMap, unsafe_record_secrets: bool) -> Vec<HeaderRecord> {

@@ -35,6 +35,7 @@ pub struct Args {
 pub struct GatewayState {
     pub client: reqwest::Client,
     pub output_root: PathBuf,
+    pub access_log_path: PathBuf,
     pub profiles: Arc<HashMap<String, ProfileConfig>>,
     pub session_header: HeaderName,
     pub unsafe_record_secrets: bool,
