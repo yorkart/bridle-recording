@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target/
+
+# Local recorder output
+/recordings/
+
+# Local agent auth symlinks/files
+/agent-home/codex-websocket/auth.json
+/agent-home/codex-http/auth.json
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

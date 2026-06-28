@@ -1,0 +1,38 @@
+# Dedicated Codex config for routing model traffic through bridle-recording.
+#
+# Start Codex with:
+#
+#   mkdir -p ~/.bridle-recording
+#   cp -R agent-home/codex-websocket ~/.bridle-recording/
+#   cp ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
+#   BRIDLE_AGENT_HOME=~/.bridle-recording/codex-websocket \
+#   CODEX_HOME=~/.bridle-recording/codex-websocket \
+#   codex
+#
+# Start the recorder separately with the ChatGPT Codex backend API as upstream:
+#
+#   BRIDLE_AGENT_HOME=~/.bridle-recording/codex-websocket \
+#   CODEX_HOME=~/.bridle-recording/codex-websocket \
+#   cargo run -- --listen 127.0.0.1:8787 --strip-responses-lite
+
+model_provider = "OpenAI"
+model = "gpt-5.5"
+review_model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+model_supports_reasoning_summaries = true
+disable_response_storage = true
+network_access = "enabled"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "http://127.0.0.1:8787/codex-websocket"
+wire_api = "responses"
+supports_websockets = true
+requires_openai_auth = true
+
+[features]
+responses_websockets_v2 = true
+goals = true
+
+[tui.model_availability_nux]
+"gpt-5.5" = 4

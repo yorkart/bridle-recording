@@ -1,0 +1,2 @@
+upstream = "https://chatgpt.com/backend-api/codex"
+supports_websocket = true
