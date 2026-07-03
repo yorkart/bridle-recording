@@ -33,10 +33,11 @@ CODEX_HOME=~/.bridle-recording/codex-http \
 codex
 ```
 
-Recorder modes:
+Recorder contract:
 
-- `passthrough`: pure proxy + recording, no intentional traffic mutation
-- `compat`: compatibility mode for protocol workarounds such as stripping the
-  Codex `responses-lite` marker before forwarding upstream
+- live traffic is forwarded as a transparent proxy
+- recording is sidecar-only and must not mutate traffic
+- headers are recorded verbatim, including sensitive headers
+- request and response bodies are recorded in raw form
 
 You can add more agent homes here later, for example `claude/`.

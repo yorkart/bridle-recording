@@ -38,27 +38,18 @@ cargo run -- \
 
 This starts the recorder on `http://127.0.0.1:8787`.
 
-`passthrough` means the recorder only proxies and records. It does not
-intentionally modify agent request or response payloads.
+The recorder contract is:
 
-If you need compatibility workarounds that intentionally mutate traffic, start
-the recorder in `compat` mode instead:
-
-```sh
-RECORDER_PROXY_MODE=compat ./scripts/run-recorder.sh
-```
-
-Today `compat` mode is what strips the Codex
-`x-openai-internal-codex-responses-lite` marker before forwarding upstream.
-That behavior is no longer part of the default recorder mode.
+- fully transparent proxying on the live path
+- sidecar recording that must not change forwarded traffic
+- 100% verbatim header recording, including sensitive headers
+- raw request/response body recording without compatibility rewrites
 
 Each configured profile forwards requests to the `upstream` declared in that
 profile's `bridle-profile.toml`.
 
-If `BRIDLE_AGENT_HOME` is set, recordings are written to
-`"$BRIDLE_AGENT_HOME/recordings"`. For Codex compatibility, `CODEX_HOME` is
-also recognized when `BRIDLE_AGENT_HOME` is not set. Otherwise recordings are
-written to `./recordings`.
+Recordings are written under the active profile home, for example
+`~/.bridle-recording/codex-http/recordings`.
 
 ## Start Codex For Recording
 
@@ -111,16 +102,10 @@ codex
 `BRIDLE_AGENT_HOME` is the neutral way to identify the active agent home.
 `CODEX_HOME` is still set here because Codex uses it to locate `config.toml`.
 
-Recommended recorder mode for `codex-http`:
-
-- Default architecture: `passthrough`
-- Codex/OpenAI compatibility workaround: `compat`
-
-Today `codex-http` with `gpt-5.5` may still require `compat` mode to reach the
-upstream Codex backend, because the upstream rejects the Codex
-`responses-lite` marker for this model family. That workaround intentionally
-changes the forwarded request and should be treated as compatibility behavior,
-not default recorder behavior.
+`codex-http` is expected to use the recorder as a transparent proxy. If some
+upstream/provider combination cannot work without mutating live traffic, that
+scenario is outside the live recorder contract and should be handled by a
+separate offline or compatibility workflow.
 
 If you want the WebSocket-enabled variant instead, copy
 `agent-home/codex-websocket/` the same way:
@@ -142,11 +127,6 @@ BRIDLE_AGENT_HOME=~/.bridle-recording/codex-websocket \
 CODEX_HOME=~/.bridle-recording/codex-websocket \
 codex
 ```
-
-Recommended recorder mode for `codex-websocket`:
-
-- Default architecture: `passthrough`
-- Codex/OpenAI compatibility workaround: `compat`
 
 `codex-websocket` now supports upstream proxy traversal through
 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` as well, so recorder-side WebSocket

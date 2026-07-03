@@ -12,10 +12,6 @@
 # Start the recorder separately with the ChatGPT Codex backend API as upstream:
 #
 #   RECORDER_PROXY_MODE=passthrough ./scripts/run-recorder.sh
-#
-# If you need Codex/OpenAI compatibility workarounds, switch the recorder to:
-#
-#   RECORDER_PROXY_MODE=compat ./scripts/run-recorder.sh
 
 model_provider = "recorder-openai-http"
 model = "gpt-5.5"
