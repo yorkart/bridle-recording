@@ -219,13 +219,9 @@ async fn read_response_status(request_dir: &Path) -> anyhow::Result<u16> {
     let bytes = fs::read(&path)
         .await
         .with_context(|| format!("read {}", path.display()))?;
-    let value: serde_json::Value =
+    let meta: crate::types::ResponseMeta =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
-    let status = value
-        .get("status")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("response_meta.json missing status"))?;
-    u16::try_from(status).context("response status out of range")
+    Ok(meta.status)
 }
 
 async fn read_header_records(path: PathBuf) -> anyhow::Result<Vec<HeaderRecord>> {

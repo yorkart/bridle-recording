@@ -3,10 +3,13 @@ use bytes::BytesMut;
 use crate::types::ParsedSseEvent;
 
 #[derive(Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SseParser {
     buffer: BytesMut,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub struct ParsedSseEventWithRaw {
     pub event: Option<String>,
     pub id: Option<String>,

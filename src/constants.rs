@@ -3,9 +3,6 @@ pub const DEFAULT_SESSION_HEADER: &str = "x-codex-session-id";
 pub const FALLBACK_SESSION_HEADERS: &[&str] = &["thread-id", "session-id"];
 pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 pub const CODEX_TURN_METADATA_FIELDS: &[&str] = &["thread_id", "session_id"];
-pub const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
-pub const RESPONSES_LITE_WS_CLIENT_METADATA_KEY: &str =
-    "ws_request_header_x_openai_internal_codex_responses_lite";
 pub const HOP_BY_HOP_RESPONSE_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
@@ -15,13 +12,6 @@ pub const HOP_BY_HOP_RESPONSE_HEADERS: &[&str] = &[
     "trailer",
     "transfer-encoding",
     "upgrade",
-];
-pub const SECRET_HEADERS: &[&str] = &[
-    "authorization",
-    "cookie",
-    "proxy-authorization",
-    "x-api-key",
-    "api-key",
 ];
 pub const MATCHER_VERSION: u32 = 2;
 pub const IGNORED_INPUT_TEXT_PREFIXES: &[&str] = &[

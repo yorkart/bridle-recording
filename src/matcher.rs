@@ -9,10 +9,10 @@ use tokio::fs;
 
 use crate::{
     constants::{IGNORED_INPUT_TEXT_PREFIXES, MATCHER_VERSION},
+    recording::write_json_file,
     types::{
         HeaderRecord, HeaderValueRecord, MatchRoute, RecordedMatch, RequestMatch, RequestMeta,
     },
-    util::write_json_file,
 };
 
 pub async fn find_recorded_match(

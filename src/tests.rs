@@ -17,28 +17,27 @@ use tower::ServiceExt;
 use crate::{
     app::proxy,
     constants::{
-        CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, RESPONSES_LITE_HEADER,
-        RESPONSES_LITE_WS_CLIENT_METADATA_KEY, UNKNOWN_SESSION,
+        CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, UNKNOWN_SESSION,
     },
     matcher::build_request_match,
-    replay::handle_mock_proxy,
+    proxy::replay::handle_mock_proxy,
+    recording::{headers_to_records, write_bytes_file, write_json_file},
     sse::SseParser,
-    types::{AppState, GatewayState, HeaderRecord, HeaderValueRecord, ProfileConfig, ResponseMeta, ResponseRewriteReplacement, ResponseRewriteSpec, SessionSource},
+    types::{AppState, GatewayState, HeaderRecord, HeaderValueRecord, ProfileConfig, ProxyMode, ResponseMeta, ResponseRewriteReplacement, ResponseRewriteSpec, SessionSource},
     util::{
-        build_upstream_url, expects_sse, headers_to_records, next_existing_request_index,
+        build_upstream_url, expects_sse, next_existing_request_index,
         now_rfc3339, request_dir, sanitize_session_id, session_from_headers,
-        should_forward_http_header, should_forward_response_header, strip_responses_lite_from_ws_text,
-        write_bytes_file, write_json_file,
+        should_forward_http_header, should_forward_response_header,
     },
 };
 
 #[test]
 fn retries_on_expected_upstream_statuses() {
-    assert!(super::http_proxy::should_retry_status(reqwest::StatusCode::BAD_GATEWAY));
-    assert!(super::http_proxy::should_retry_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
-    assert!(super::http_proxy::should_retry_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
-    assert!(super::http_proxy::should_retry_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-    assert!(!super::http_proxy::should_retry_status(reqwest::StatusCode::UNAUTHORIZED));
+    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::BAD_GATEWAY));
+    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+    assert!(!super::proxy::http::should_retry_status(reqwest::StatusCode::UNAUTHORIZED));
 }
 
 #[test]
@@ -117,10 +116,9 @@ fn joins_upstream_base_path_and_request_path() {
 }
 
 #[test]
-fn strips_responses_lite_http_header_only_when_enabled() {
-    let header = HeaderName::from_static(RESPONSES_LITE_HEADER);
-    assert!(!should_forward_http_header(&header, true));
-    assert!(should_forward_http_header(&header, false));
+fn forwards_responses_lite_http_header_without_mutation() {
+    let header = HeaderName::from_static("x-openai-internal-codex-responses-lite");
+    assert!(should_forward_http_header(&header, ProxyMode::Passthrough));
 }
 
 #[test]
@@ -145,21 +143,6 @@ fn does_not_forward_hop_by_hop_response_headers() {
     assert!(should_forward_response_header(&HeaderName::from_static(
         "x-codex-plan-type"
     )));
-}
-
-#[test]
-fn strips_responses_lite_websocket_client_metadata() {
-    let stripped = strip_responses_lite_from_ws_text(
-        r#"{"type":"response.create","client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true","session_id":"s1"},"model":"gpt-5.5"}"#,
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stripped).unwrap();
-    let metadata = value.get("client_metadata").unwrap();
-
-    assert_eq!(metadata.get("session_id").unwrap(), "s1");
-    assert!(metadata
-        .get(RESPONSES_LITE_WS_CLIENT_METADATA_KEY)
-        .is_none());
 }
 
 #[test]
@@ -490,13 +473,13 @@ fn parses_sse_events_across_chunks() {
 }
 
 #[test]
-fn redacts_secret_headers_by_default() {
+fn records_secret_headers_verbatim() {
     let mut headers = HeaderMap::new();
     headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
     let records = headers_to_records(&headers, false);
     assert!(matches!(
-        records[0].value,
-        HeaderValueRecord::RedactedSha256 { .. }
+        &records[0].value,
+        HeaderValueRecord::Text { value } if value == "Bearer secret"
     ));
 }
 
@@ -634,7 +617,7 @@ fn test_state(output_dir: &Path) -> AppState {
         output_dir: output_dir.to_path_buf(),
         session_header: HeaderName::from_static(DEFAULT_SESSION_HEADER),
         unsafe_record_secrets: false,
-        strip_responses_lite: false,
+        proxy_mode: ProxyMode::Passthrough,
         counters: Arc::new(Mutex::new(HashMap::new())),
         replay_sessions: Arc::new(Mutex::new(HashMap::new())),
     }
@@ -670,7 +653,7 @@ fn gateway_test_state(output_root: &Path, upstream: Url) -> GatewayState {
         ])),
         session_header: HeaderName::from_static(DEFAULT_SESSION_HEADER),
         unsafe_record_secrets: false,
-        strip_responses_lite: false,
+        proxy_mode: ProxyMode::Passthrough,
         counters: Arc::new(Mutex::new(HashMap::new())),
         replay_sessions: Arc::new(Mutex::new(HashMap::new())),
     }

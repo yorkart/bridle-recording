@@ -27,7 +27,20 @@ pub struct Args {
     #[arg(long, env = "RECORDER_UNSAFE_RECORD_SECRETS", default_value_t = false)]
     pub unsafe_record_secrets: bool,
 
-    #[arg(long, env = "RECORDER_STRIP_RESPONSES_LITE", default_value_t = false)]
+    #[arg(
+        long,
+        env = "RECORDER_PROXY_MODE",
+        value_enum,
+        default_value_t = ProxyMode::Passthrough
+    )]
+    pub proxy_mode: ProxyMode,
+
+    #[arg(
+        long,
+        env = "RECORDER_STRIP_RESPONSES_LITE",
+        default_value_t = false,
+        hide = true
+    )]
     pub strip_responses_lite: bool,
 }
 
@@ -39,7 +52,7 @@ pub struct GatewayState {
     pub profiles: Arc<HashMap<String, ProfileConfig>>,
     pub session_header: HeaderName,
     pub unsafe_record_secrets: bool,
-    pub strip_responses_lite: bool,
+    pub proxy_mode: ProxyMode,
     pub counters: Arc<Mutex<HashMap<String, u64>>>,
     pub replay_sessions: Arc<Mutex<HashMap<String, ReplaySession>>>,
 }
@@ -51,9 +64,15 @@ pub struct AppState {
     pub output_dir: PathBuf,
     pub session_header: HeaderName,
     pub unsafe_record_secrets: bool,
-    pub strip_responses_lite: bool,
+    pub proxy_mode: ProxyMode,
     pub counters: Arc<Mutex<HashMap<String, u64>>>,
     pub replay_sessions: Arc<Mutex<HashMap<String, ReplaySession>>>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, clap::ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+    Passthrough,
 }
 
 #[derive(Clone)]
@@ -80,7 +99,7 @@ pub struct RecorderManifest {
     pub session_header: String,
     pub upstream_base_url: String,
     pub unsafe_record_secrets: bool,
-    pub strip_responses_lite: bool,
+    pub proxy_mode: ProxyMode,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -143,7 +162,7 @@ pub enum SessionSource {
     Unknown,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ResponseMeta {
     pub status: u16,
     pub started_at: String,
@@ -176,16 +195,6 @@ pub enum HeaderValueRecord {
     Text { value: String },
     BinaryBase64 { value: String },
     RedactedSha256 { sha256: String },
-}
-
-#[derive(Serialize)]
-pub struct SseEventRecord {
-    pub index: usize,
-    pub event: Option<String>,
-    pub id: Option<String>,
-    pub retry: Option<String>,
-    pub data: Vec<String>,
-    pub raw_base64: String,
 }
 
 #[derive(Serialize)]

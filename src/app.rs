@@ -12,11 +12,13 @@ use tokio::{fs, net::TcpListener};
 use tracing::{error, info, warn};
 
 use crate::{
-    http_proxy::handle_proxy,
-    replay::handle_mock_proxy,
+    proxy::{
+        http::handle_proxy,
+        replay::handle_mock_proxy,
+        websocket::{prepare_websocket_proxy, run_websocket_proxy},
+    },
+    recording::append_access_log_line,
     types::{AppState, Args, GatewayState, ProfileConfig},
-    util::append_access_log_line,
-    websocket_proxy::{prepare_websocket_proxy, run_websocket_proxy},
 };
 
 pub async fn run() -> anyhow::Result<()> {
@@ -39,6 +41,12 @@ pub async fn run() -> anyhow::Result<()> {
     let profile_root = default_profile_root();
     let access_log_path = profile_root.join("access.log");
     let profiles = load_profiles(&profile_root).await?;
+    if args.strip_responses_lite {
+        anyhow::bail!(
+            "RECORDER_STRIP_RESPONSES_LITE/--strip-responses-lite is no longer supported: transparent proxy mode cannot modify forwarded traffic"
+        );
+    }
+    let proxy_mode = args.proxy_mode;
 
     fs::create_dir_all(&profile_root)
         .await
@@ -51,7 +59,7 @@ pub async fn run() -> anyhow::Result<()> {
         profiles: std::sync::Arc::new(profiles),
         session_header,
         unsafe_record_secrets: args.unsafe_record_secrets,
-        strip_responses_lite: args.strip_responses_lite,
+        proxy_mode,
         counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         replay_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
@@ -70,7 +78,7 @@ pub async fn run() -> anyhow::Result<()> {
         profiles = ?state.profiles.keys().collect::<Vec<_>>(),
         profile_root = %state.output_root.display(),
         session_header = %state.session_header,
-        strip_responses_lite = state.strip_responses_lite,
+        proxy_mode = ?state.proxy_mode,
         http_proxy = ?std::env::var("HTTP_PROXY").ok(),
         https_proxy = ?std::env::var("HTTPS_PROXY").ok(),
         all_proxy = ?std::env::var("ALL_PROXY").ok(),
@@ -181,7 +189,7 @@ fn resolve_profile(state: &GatewayState, profile: &str) -> anyhow::Result<AppSta
         output_dir: profile_config.home_dir.join("recordings"),
         session_header: state.session_header.clone(),
         unsafe_record_secrets: state.unsafe_record_secrets,
-        strip_responses_lite: state.strip_responses_lite,
+        proxy_mode: state.proxy_mode,
         counters: state.counters.clone(),
         replay_sessions: state.replay_sessions.clone(),
     })
