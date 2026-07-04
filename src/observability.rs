@@ -1,0 +1,772 @@
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Read,
+    path::{Path, PathBuf},
+};
+
+use anyhow::Context;
+use axum::{
+    extract::{Path as AxumPath, State},
+    http::{header::CONTENT_TYPE, StatusCode},
+    response::{IntoResponse, Response},
+    Json,
+};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use tokio::fs;
+
+use crate::{
+    constants::UNKNOWN_SESSION,
+    sse::SseParser,
+    types::{GatewayState, RequestMeta, ResponseMeta},
+};
+
+pub async fn ui() -> Response {
+    (
+        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        OBSERVABILITY_HTML,
+    )
+        .into_response()
+}
+
+pub async fn profiles(State(state): State<GatewayState>) -> Response {
+    let mut profiles = state.profiles.keys().cloned().collect::<Vec<_>>();
+    profiles.sort();
+    Json(serde_json::json!({ "profiles": profiles })).into_response()
+}
+
+pub async fn sessions(
+    State(state): State<GatewayState>,
+    AxumPath(profile): AxumPath<String>,
+) -> Response {
+    match sessions_inner(&state, &profile).await {
+        Ok(sessions) => Json(serde_json::json!({ "sessions": sessions })).into_response(),
+        Err(err) => api_error(StatusCode::NOT_FOUND, err),
+    }
+}
+
+pub async fn session(
+    State(state): State<GatewayState>,
+    AxumPath((profile, session_id)): AxumPath<(String, String)>,
+) -> Response {
+    match session_inner(&state, &profile, &session_id).await {
+        Ok(session) => Json(session).into_response(),
+        Err(err) => api_error(StatusCode::NOT_FOUND, err),
+    }
+}
+
+fn api_error(status: StatusCode, err: anyhow::Error) -> Response {
+    (
+        status,
+        [(CONTENT_TYPE, "application/json")],
+        serde_json::json!({
+            "error": "observability request failed",
+            "detail": err.to_string()
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+async fn sessions_inner(
+    state: &GatewayState,
+    profile: &str,
+) -> anyhow::Result<Vec<ObservedSessionSummary>> {
+    let profile = state
+        .profiles
+        .get(profile)
+        .with_context(|| format!("unknown profile: {profile}"))?;
+    let recordings_dir = profile.home_dir.join("recordings");
+    let mut out = Vec::new();
+    let mut entries = match fs::read_dir(&recordings_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err).with_context(|| format!("read {}", recordings_dir.display())),
+    };
+
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let Some(session_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if session_id == UNKNOWN_SESSION {
+            continue;
+        }
+        let manifest_path = entry.path().join("manifest.json");
+        let manifest = read_json::<serde_json::Value>(&manifest_path).await.ok();
+        let request_count = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.get("request_count"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let created_at = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.get("created_at"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_default();
+        let updated_at = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.get("updated_at"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_default();
+        out.push(ObservedSessionSummary {
+            session_id,
+            profile: profile.name.clone(),
+            created_at,
+            updated_at,
+            request_count,
+        });
+    }
+
+    out.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    Ok(out)
+}
+
+async fn session_inner(
+    state: &GatewayState,
+    profile: &str,
+    session_id: &str,
+) -> anyhow::Result<ObservedSession> {
+    let profile_config = state
+        .profiles
+        .get(profile)
+        .with_context(|| format!("unknown profile: {profile}"))?;
+    let session_dir = profile_config.home_dir.join("recordings").join(session_id);
+    let manifest = read_json::<serde_json::Value>(&session_dir.join("manifest.json"))
+        .await
+        .with_context(|| format!("load session manifest {}", session_dir.display()))?;
+    let requests = load_observed_calls(&session_dir).await?;
+    let turns = build_turns(&requests);
+    Ok(ObservedSession {
+        profile: profile.to_owned(),
+        session_id: session_id.to_owned(),
+        raw_root: session_dir.display().to_string(),
+        manifest,
+        turns,
+        requests,
+    })
+}
+
+async fn load_observed_calls(session_dir: &Path) -> anyhow::Result<Vec<ObservedCall>> {
+    let requests_dir = session_dir.join("requests");
+    let mut entries = fs::read_dir(&requests_dir)
+        .await
+        .with_context(|| format!("read {}", requests_dir.display()))?;
+    let mut request_dirs = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_type().await?.is_dir() {
+            request_dirs.push(entry.path());
+        }
+    }
+    request_dirs.sort();
+
+    let mut calls = Vec::new();
+    for request_dir in request_dirs {
+        let Some(index) = request_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        calls.push(load_observed_call(index, request_dir).await?);
+    }
+    Ok(calls)
+}
+
+async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Result<ObservedCall> {
+    let request_meta = read_json::<RequestMeta>(&request_dir.join("request_meta.json")).await?;
+    let response_meta = read_json::<ResponseMeta>(&request_dir.join("response_meta.json")).await?;
+    let request_body_bytes = fs::read(request_dir.join("request_body.raw"))
+        .await
+        .with_context(|| format!("read request body in {}", request_dir.display()))?;
+    let request_body = decode_request_body_json(&request_body_bytes)?;
+    let sse_bytes = fs::read(request_dir.join("response_sse.raw"))
+        .await
+        .with_context(|| format!("read response_sse.raw in {}", request_dir.display()))?;
+    let sse = parse_response_sse(&sse_bytes);
+    let files = request_files(&request_dir).await?;
+
+    let prompt_blocks = prompt_blocks(&request_body);
+    let visible_user_messages = visible_user_messages(&prompt_blocks);
+    let tool_definitions = tool_definitions(&request_body);
+    let previous_tool_outputs = previous_tool_outputs(&request_body);
+    let previous_function_calls = previous_function_calls(&request_body);
+    let previous_assistant_messages = previous_assistant_messages(&prompt_blocks);
+
+    let duration_ms = duration_ms(&response_meta.started_at, &response_meta.completed_at);
+    let response_id = sse
+        .completed_response
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let model = request_body
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            sse.completed_response
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+        })
+        .unwrap_or("unknown")
+        .to_owned();
+    let stream = request_body
+        .get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let input_count = request_body
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+
+    Ok(ObservedCall {
+        index,
+        request_id: if response_id.is_empty() {
+            format!("request-{}", request_meta.index)
+        } else {
+            response_id
+        },
+        started_at: request_meta.started_at,
+        completed_at: response_meta.completed_at,
+        duration_ms,
+        method: request_meta.method,
+        path: request_meta.path,
+        status: response_meta.status,
+        model,
+        stream,
+        input_count,
+        tools_count: tool_definitions.len(),
+        tool_names: tool_definitions
+            .iter()
+            .take(16)
+            .map(|tool| tool.name.clone())
+            .collect(),
+        tool_definitions,
+        prompt_blocks,
+        visible_user_messages,
+        previous_tool_outputs,
+        previous_function_calls,
+        previous_assistant_messages,
+        function_calls: sse.function_calls,
+        output_text: sse.output_text.trim().to_owned(),
+        usage: sse.completed_response.get("usage").cloned(),
+        event_counts: sse.event_counts,
+        files,
+        raw_dir: request_dir.display().to_string(),
+        request_body_bytes: request_meta.request_body_bytes,
+        response_body_bytes: response_meta.response_body_bytes,
+    })
+}
+
+fn decode_request_body_json(bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
+    match serde_json::from_slice(bytes) {
+        Ok(value) => return Ok(value),
+        Err(json_err) => {
+            let mut decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(bytes))
+                .context("create zstd request body decoder")?;
+            let mut decoded = Vec::new();
+            decoder
+                .read_to_end(&mut decoded)
+                .context("decode zstd request body")?;
+            serde_json::from_slice(&decoded)
+                .with_context(|| format!("parse decoded request body as json after {json_err}"))
+        }
+    }
+}
+
+fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
+    let mut parser = SseParser::default();
+    let mut event_counts = BTreeMap::new();
+    let mut output_text = String::new();
+    let mut function_calls = Vec::new();
+    let mut function_args = HashMap::new();
+    let mut completed_response = serde_json::Value::Object(serde_json::Map::new());
+
+    for event in parser.push(bytes) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&event.data.join("\n")) else {
+            continue;
+        };
+        let event_type = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .or(event.event.as_deref())
+            .unwrap_or("unknown")
+            .to_owned();
+        *event_counts.entry(event_type.clone()).or_insert(0) += 1;
+
+        match event_type.as_str() {
+            "response.output_text.delta" => {
+                if let Some(delta) = value.get("delta").and_then(serde_json::Value::as_str) {
+                    output_text.push_str(delta);
+                }
+            }
+            "response.function_call_arguments.done" => {
+                if let (Some(item_id), Some(arguments)) = (
+                    value.get("item_id").and_then(serde_json::Value::as_str),
+                    value.get("arguments").and_then(serde_json::Value::as_str),
+                ) {
+                    function_args.insert(item_id.to_owned(), arguments.to_owned());
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = value.get("item") {
+                    if item.get("type").and_then(serde_json::Value::as_str) == Some("message") {
+                        if output_text.is_empty() {
+                            output_text.push_str(&content_text(item.get("content")));
+                        }
+                    } else if item.get("type").and_then(serde_json::Value::as_str)
+                        == Some("function_call")
+                    {
+                        let item_id = item
+                            .get("id")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let arguments = item
+                            .get("arguments")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .or_else(|| function_args.get(item_id).cloned())
+                            .unwrap_or_default();
+                        function_calls.push(ObservedFunctionCall {
+                            id: item_id.to_owned(),
+                            call_id: item
+                                .get("call_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            name: item
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_owned(),
+                            status: item
+                                .get("status")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                            arguments: pretty_json_str(&arguments),
+                        });
+                    }
+                }
+            }
+            "response.completed" => {
+                completed_response = value
+                    .get("response")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+            }
+            _ => {}
+        }
+    }
+
+    ParsedResponseSse {
+        output_text,
+        function_calls,
+        completed_response,
+        event_counts,
+    }
+}
+
+fn prompt_blocks(request_body: &serde_json::Value) -> Vec<PromptBlock> {
+    let mut blocks = Vec::new();
+    if let Some(instructions) = request_body
+        .get("instructions")
+        .and_then(serde_json::Value::as_str)
+        .filter(|instructions| !instructions.trim().is_empty())
+    {
+        blocks.push(PromptBlock {
+            role: "system".to_owned(),
+            block_type: "system".to_owned(),
+            chars: instructions.chars().count(),
+            excerpt: excerpt(instructions, 760),
+            text: instructions.to_owned(),
+        });
+    }
+
+    let Some(input) = request_body
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return blocks;
+    };
+    blocks.extend(
+        input.iter().filter_map(|item| {
+            if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+                return None;
+            }
+            let role = item
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("message")
+                .to_owned();
+            let text = content_text(item.get("content"));
+            let block_type = classify_prompt_block(&role, &text);
+            Some(PromptBlock {
+                role,
+                block_type,
+                chars: text.chars().count(),
+                excerpt: excerpt(&text, 760),
+                text,
+            })
+        }),
+    );
+    blocks
+}
+
+fn visible_user_messages(blocks: &[PromptBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter(|block| block.role == "user" && !is_derived_context_block(&block.block_type))
+        .map(|block| block.excerpt.clone())
+        .collect()
+}
+
+fn previous_assistant_messages(blocks: &[PromptBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter(|block| block.role == "assistant")
+        .map(|block| block.excerpt.clone())
+        .collect()
+}
+
+fn is_derived_context_block(block_type: &str) -> bool {
+    matches!(
+        block_type,
+        "environment" | "permissions" | "skills" | "apps" | "plugins"
+    )
+}
+
+fn classify_prompt_block(role: &str, text: &str) -> String {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("<environment_context>") {
+        "environment"
+    } else if trimmed.starts_with("<permissions instructions>") {
+        "permissions"
+    } else if trimmed.starts_with("<skills_instructions>") {
+        "skills"
+    } else if trimmed.starts_with("<apps_instructions>") {
+        "apps"
+    } else if trimmed.starts_with("<plugins_instructions>") {
+        "plugins"
+    } else {
+        role
+    }
+    .to_owned()
+}
+
+fn tool_definitions(request_body: &serde_json::Value) -> Vec<ToolDefinition> {
+    request_body
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|tool| {
+            let function = tool.get("function");
+            let name = tool
+                .get("name")
+                .or_else(|| function.and_then(|function| function.get("name")))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned();
+            let tool_type = tool
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("function")
+                .to_owned();
+            let description = tool
+                .get("description")
+                .or_else(|| function.and_then(|function| function.get("description")))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            ToolDefinition {
+                name,
+                tool_type,
+                description: excerpt(description, 220),
+            }
+        })
+        .collect()
+}
+
+fn previous_tool_outputs(request_body: &serde_json::Value) -> Vec<ToolOutput> {
+    request_body
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call_output")
+        })
+        .map(|item| ToolOutput {
+            call_id: item
+                .get("call_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            output: excerpt(
+                item.get("output")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+                1200,
+            ),
+        })
+        .collect()
+}
+
+fn previous_function_calls(request_body: &serde_json::Value) -> Vec<ObservedFunctionCall> {
+    request_body
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
+        })
+        .map(|item| ObservedFunctionCall {
+            id: item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            call_id: item
+                .get("call_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            name: item
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned(),
+            status: item
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            arguments: pretty_json_str(
+                item.get("arguments")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            ),
+        })
+        .collect()
+}
+
+async fn request_files(request_dir: &Path) -> anyhow::Result<Vec<ObservedFile>> {
+    let mut out = Vec::new();
+    let mut entries = fs::read_dir(request_dir)
+        .await
+        .with_context(|| format!("read {}", request_dir.display()))?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        let metadata = entry.metadata().await?;
+        out.push(ObservedFile {
+            name: entry.file_name().to_string_lossy().to_string(),
+            bytes: metadata.len(),
+        });
+    }
+    out.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(out)
+}
+
+fn build_turns(calls: &[ObservedCall]) -> Vec<ObservedTurn> {
+    let mut turns: Vec<ObservedTurn> = Vec::new();
+    for call in calls {
+        let user = call
+            .visible_user_messages
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "(no visible user input)".to_owned());
+        let should_start = turns.last().map(|turn| turn.user != user).unwrap_or(true);
+        if should_start {
+            turns.push(ObservedTurn {
+                id: format!("turn-{:06}", turns.len()),
+                user,
+                started_at: call.started_at.clone(),
+                calls: Vec::new(),
+                assistant: String::new(),
+                tool_outputs: Vec::new(),
+            });
+        }
+        let turn = turns
+            .last_mut()
+            .expect("turn inserted before attaching observed call");
+        if !call.output_text.is_empty() {
+            turn.assistant = call.output_text.clone();
+        }
+        for output in &call.previous_tool_outputs {
+            if !turn
+                .tool_outputs
+                .iter()
+                .any(|existing| existing.call_id == output.call_id)
+            {
+                turn.tool_outputs.push(output.clone());
+            }
+        }
+        turn.calls.push(call.clone());
+    }
+    turns
+}
+
+fn content_text(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .or_else(|| part.get("output_text"))
+                    .and_then(serde_json::Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+fn excerpt(text: &str, max_chars: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let mut out = text.chars().take(max_chars).collect::<String>();
+    out.push_str("...");
+    out
+}
+
+fn pretty_json_str(text: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| text.to_owned())
+}
+
+fn duration_ms(started_at: &str, completed_at: &str) -> Option<i64> {
+    let start = started_at.parse::<DateTime<Utc>>().ok()?;
+    let end = completed_at.parse::<DateTime<Utc>>().ok()?;
+    Some((end - start).num_milliseconds())
+}
+
+async fn read_json<T>(path: &Path) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let bytes = fs::read(path)
+        .await
+        .with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+#[derive(Serialize)]
+struct ObservedSessionSummary {
+    session_id: String,
+    profile: String,
+    created_at: String,
+    updated_at: String,
+    request_count: u64,
+}
+
+#[derive(Serialize)]
+struct ObservedSession {
+    profile: String,
+    session_id: String,
+    raw_root: String,
+    manifest: serde_json::Value,
+    turns: Vec<ObservedTurn>,
+    requests: Vec<ObservedCall>,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedTurn {
+    id: String,
+    user: String,
+    started_at: String,
+    calls: Vec<ObservedCall>,
+    assistant: String,
+    tool_outputs: Vec<ToolOutput>,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedCall {
+    index: String,
+    request_id: String,
+    started_at: String,
+    completed_at: String,
+    duration_ms: Option<i64>,
+    method: String,
+    path: String,
+    status: u16,
+    model: String,
+    stream: bool,
+    input_count: usize,
+    tools_count: usize,
+    tool_names: Vec<String>,
+    tool_definitions: Vec<ToolDefinition>,
+    prompt_blocks: Vec<PromptBlock>,
+    visible_user_messages: Vec<String>,
+    previous_tool_outputs: Vec<ToolOutput>,
+    previous_function_calls: Vec<ObservedFunctionCall>,
+    previous_assistant_messages: Vec<String>,
+    function_calls: Vec<ObservedFunctionCall>,
+    output_text: String,
+    usage: Option<serde_json::Value>,
+    event_counts: BTreeMap<String, usize>,
+    files: Vec<ObservedFile>,
+    raw_dir: String,
+    request_body_bytes: usize,
+    response_body_bytes: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct PromptBlock {
+    role: String,
+    #[serde(rename = "type")]
+    block_type: String,
+    chars: usize,
+    excerpt: String,
+    text: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedFunctionCall {
+    id: String,
+    call_id: String,
+    name: String,
+    status: String,
+    arguments: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ToolDefinition {
+    name: String,
+    #[serde(rename = "type")]
+    tool_type: String,
+    description: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ToolOutput {
+    call_id: String,
+    output: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedFile {
+    name: String,
+    bytes: u64,
+}
+
+struct ParsedResponseSse {
+    output_text: String,
+    function_calls: Vec<ObservedFunctionCall>,
+    completed_response: serde_json::Value,
+    event_counts: BTreeMap<String, usize>,
+}
+
+const OBSERVABILITY_HTML: &str = include_str!("observability_ui.html");

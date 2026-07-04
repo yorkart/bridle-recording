@@ -1,6 +1,6 @@
 use anyhow::Context;
 use axum::{
-    extract::{Path as AxumPath, State, ws::WebSocketUpgrade},
+    extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{any, get},
@@ -61,11 +61,23 @@ pub async fn run() -> anyhow::Result<()> {
         unsafe_record_secrets: args.unsafe_record_secrets,
         proxy_mode,
         counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        replay_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        replay_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )),
     };
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/ui", get(crate::observability::ui))
+        .route("/api/profiles", get(crate::observability::profiles))
+        .route(
+            "/api/profiles/:profile/sessions",
+            get(crate::observability::sessions),
+        )
+        .route(
+            "/api/profiles/:profile/sessions/:session_id",
+            get(crate::observability::session),
+        )
         .route("/:profile/mock/*path", any(mock_proxy))
         .route("/:profile/*path", any(proxy))
         .with_state(state.clone());
@@ -119,7 +131,13 @@ fn default_profile_root() -> std::path::PathBuf {
                     .map(|parent| parent.into_os_string())
             })
         })
-        .or_else(|| std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".bridle-recording").into_os_string()))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                std::path::PathBuf::from(home)
+                    .join(".bridle-recording")
+                    .into_os_string()
+            })
+        })
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(".bridle-recording"))
 }
@@ -132,7 +150,8 @@ async fn load_profiles(
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(profiles),
         Err(err) => {
-            return Err(err).with_context(|| format!("read profile root {}", profile_root.display()))
+            return Err(err)
+                .with_context(|| format!("read profile root {}", profile_root.display()))
         }
     };
 
@@ -228,7 +247,10 @@ pub async fn proxy(
         if !state.profile.supports_websocket {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("profile '{}' does not support websocket proxying", state.profile.name),
+                format!(
+                    "profile '{}' does not support websocket proxying",
+                    state.profile.name
+                ),
             )
                 .into_response();
         }

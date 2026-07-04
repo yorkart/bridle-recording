@@ -1,6 +1,7 @@
 mod app;
 mod constants;
 mod matcher;
+mod observability;
 mod proxy;
 mod recording;
 mod sse;
