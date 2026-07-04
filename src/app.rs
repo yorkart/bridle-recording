@@ -69,6 +69,11 @@ pub async fn run() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/ui", get(crate::observability::ui))
+        .route("/api/testsets", get(crate::observability::testsets))
+        .route(
+            "/api/testsets/:profile",
+            get(crate::observability::profile_testsets),
+        )
         .route("/api/profiles", get(crate::observability::profiles))
         .route(
             "/api/profiles/:profile/sessions",

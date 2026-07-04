@@ -39,6 +39,20 @@ pub async fn profiles(State(state): State<GatewayState>) -> Response {
     Json(serde_json::json!({ "profiles": profiles })).into_response()
 }
 
+pub async fn testsets() -> Response {
+    match testsets_inner(None).await {
+        Ok(testsets) => Json(serde_json::json!({ "testsets": testsets })).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
+pub async fn profile_testsets(AxumPath(profile): AxumPath<String>) -> Response {
+    match testsets_inner(Some(&profile)).await {
+        Ok(testsets) => Json(serde_json::json!({ "testsets": testsets })).into_response(),
+        Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, err),
+    }
+}
+
 pub async fn sessions(
     State(state): State<GatewayState>,
     AxumPath(profile): AxumPath<String>,
@@ -105,11 +119,10 @@ async fn save_testset_inner(
     }
 
     let observed = session_inner(state, profile, session_id).await?;
-    let first_user_input = observed
-        .turns
+    let user_inputs = collect_user_inputs(&observed.turns);
+    let first_user_input = user_inputs
         .first()
-        .map(|turn| turn.user.trim().to_owned())
-        .filter(|input| !input.is_empty())
+        .cloned()
         .with_context(|| format!("session {session_id} has no visible user input"))?;
     let user_input_sha256 = sha256_hex(first_user_input.as_bytes());
     let repo_root = std::env::current_dir().context("resolve current git repository root")?;
@@ -146,6 +159,7 @@ async fn save_testset_inner(
         profile: profile.to_owned(),
         source_session_id: session_id.to_owned(),
         first_user_input: first_user_input.clone(),
+        user_inputs,
         user_input_sha256: user_input_sha256.clone(),
         saved_at: crate::util::now_rfc3339(),
         source_recording_path: source_dir.display().to_string(),
@@ -167,6 +181,73 @@ async fn save_testset_inner(
         testset_path: testset_dir.display().to_string(),
         raw_path: raw_dir.display().to_string(),
     })
+}
+
+async fn testsets_inner(profile_filter: Option<&str>) -> anyhow::Result<Vec<TestsetSummary>> {
+    let repo_root = std::env::current_dir().context("resolve current git repository root")?;
+    let testsets_dir = repo_root.join("testsets");
+    let mut out = Vec::new();
+    let mut profile_entries = match fs::read_dir(&testsets_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err).with_context(|| format!("read {}", testsets_dir.display())),
+    };
+
+    while let Some(profile_entry) = profile_entries.next_entry().await? {
+        if !profile_entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let Some(profile) = profile_entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if profile_filter.is_some_and(|filter| filter != profile) {
+            continue;
+        }
+
+        let mut testset_entries = fs::read_dir(profile_entry.path())
+            .await
+            .with_context(|| format!("read testsets for profile {profile}"))?;
+        while let Some(testset_entry) = testset_entries.next_entry().await? {
+            if !testset_entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let Some(id) = testset_entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            if id.starts_with('.') {
+                continue;
+            }
+            let manifest_path = testset_entry.path().join("testset.json");
+            let manifest = read_json::<TestsetManifest>(&manifest_path)
+                .await
+                .with_context(|| format!("load testset manifest {}", manifest_path.display()))?;
+            let user_inputs = if manifest.user_inputs.is_empty() {
+                vec![manifest.first_user_input.clone()]
+            } else {
+                manifest.user_inputs.clone()
+            };
+            out.push(TestsetSummary {
+                profile: manifest.profile,
+                id,
+                source_session_id: manifest.source_session_id,
+                first_user_input: manifest.first_user_input,
+                user_inputs,
+                user_input_sha256: manifest.user_input_sha256,
+                saved_at: manifest.saved_at,
+                source_recording_path: manifest.source_recording_path,
+                raw_recording_path: manifest.raw_recording_path,
+                testset_path: testset_entry.path().display().to_string(),
+            });
+        }
+    }
+
+    out.sort_by(|left, right| {
+        left.profile
+            .cmp(&right.profile)
+            .then_with(|| left.first_user_input.cmp(&right.first_user_input))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(out)
 }
 
 async fn sessions_inner(
@@ -495,27 +576,25 @@ fn prompt_blocks(request_body: &serde_json::Value) -> Vec<PromptBlock> {
     else {
         return blocks;
     };
-    blocks.extend(
-        input.iter().filter_map(|item| {
-            if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
-                return None;
-            }
-            let role = item
-                .get("role")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("message")
-                .to_owned();
-            let text = content_text(item.get("content"));
-            let block_type = classify_prompt_block(&role, &text);
-            Some(PromptBlock {
-                role,
-                block_type,
-                chars: text.chars().count(),
-                excerpt: excerpt(&text, 760),
-                text,
-            })
-        }),
-    );
+    blocks.extend(input.iter().filter_map(|item| {
+        if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+            return None;
+        }
+        let role = item
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("message")
+            .to_owned();
+        let text = content_text(item.get("content"));
+        let block_type = classify_prompt_block(&role, &text);
+        Some(PromptBlock {
+            role,
+            block_type,
+            chars: text.chars().count(),
+            excerpt: excerpt(&text, 760),
+            text,
+        })
+    }));
     blocks
 }
 
@@ -715,6 +794,20 @@ fn build_turns(calls: &[ObservedCall]) -> Vec<ObservedTurn> {
     turns
 }
 
+fn collect_user_inputs(turns: &[ObservedTurn]) -> Vec<String> {
+    let mut inputs = Vec::new();
+    for turn in turns {
+        let user = turn.user.trim();
+        if user.is_empty() || user == "(no visible user input)" {
+            continue;
+        }
+        if !inputs.iter().any(|existing| existing == user) {
+            inputs.push(user.to_owned());
+        }
+    }
+    inputs
+}
+
 fn content_text(value: Option<&serde_json::Value>) -> String {
     match value {
         Some(serde_json::Value::String(text)) => text.clone(),
@@ -887,16 +980,32 @@ struct SavedTestset {
     raw_path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct TestsetManifest {
     version: u32,
     profile: String,
     source_session_id: String,
     first_user_input: String,
+    #[serde(default)]
+    user_inputs: Vec<String>,
     user_input_sha256: String,
     saved_at: String,
     source_recording_path: String,
     raw_recording_path: String,
+}
+
+#[derive(Serialize)]
+struct TestsetSummary {
+    profile: String,
+    id: String,
+    source_session_id: String,
+    first_user_input: String,
+    user_inputs: Vec<String>,
+    user_input_sha256: String,
+    saved_at: String,
+    source_recording_path: String,
+    raw_recording_path: String,
+    testset_path: String,
 }
 
 #[derive(Serialize)]

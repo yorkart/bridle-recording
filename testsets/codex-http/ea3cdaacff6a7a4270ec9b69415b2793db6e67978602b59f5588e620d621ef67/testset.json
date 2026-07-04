@@ -3,6 +3,10 @@
   "profile": "codex-http",
   "source_session_id": "019f2a24-f268-7eb0-8518-10375ab58b97",
   "first_user_input": "list files",
+  "user_inputs": [
+    "list files",
+    "hi"
+  ],
   "user_input_sha256": "ea3cdaacff6a7a4270ec9b69415b2793db6e67978602b59f5588e620d621ef67",
   "saved_at": "2026-07-04T01:44:27.522Z",
   "source_recording_path": "/Users/yorkart/.bridle-recording/codex-http/recordings/019f2a24-f268-7eb0-8518-10375ab58b97",
