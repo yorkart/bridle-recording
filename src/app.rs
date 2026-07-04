@@ -3,7 +3,7 @@ use axum::{
     extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{any, get},
+    routing::{any, get, post},
     Router,
 };
 use bytes::Bytes;
@@ -77,6 +77,10 @@ pub async fn run() -> anyhow::Result<()> {
         .route(
             "/api/profiles/:profile/sessions/:session_id",
             get(crate::observability::session),
+        )
+        .route(
+            "/api/profiles/:profile/sessions/:session_id/testset",
+            post(crate::observability::save_testset),
         )
         .route("/:profile/mock/*path", any(mock_proxy))
         .route("/:profile/*path", any(proxy))

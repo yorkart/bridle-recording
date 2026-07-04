@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "started_at": "2026-07-03T23:23:41.094Z",
+  "completed_at": "2026-07-03T23:23:43.152Z",
+  "response_body_bytes": 111492,
+  "sse_event_count": 0,
+  "upstream_error": null
+}

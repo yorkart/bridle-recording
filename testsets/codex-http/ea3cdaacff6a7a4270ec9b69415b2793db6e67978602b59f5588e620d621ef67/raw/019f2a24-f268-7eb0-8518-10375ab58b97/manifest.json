@@ -1,0 +1,14 @@
+{
+  "session_id": "019f2a24-f268-7eb0-8518-10375ab58b97",
+  "created_at": "2026-07-03T22:42:00.135Z",
+  "updated_at": "2026-07-03T23:23:41.097Z",
+  "request_count": 3,
+  "recorder": {
+    "version": "0.1.0",
+    "profile": "codex-http",
+    "session_header": "x-codex-session-id",
+    "upstream_base_url": "https://chatgpt.com/backend-api/codex",
+    "unsafe_record_secrets": false,
+    "proxy_mode": "passthrough"
+  }
+}

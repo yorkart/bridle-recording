@@ -1,0 +1,282 @@
+[
+  {
+    "name": "date",
+    "value": {
+      "kind": "text",
+      "value": "Fri, 03 Jul 2026 22:42:01 GMT"
+    }
+  },
+  {
+    "name": "transfer-encoding",
+    "value": {
+      "kind": "text",
+      "value": "chunked"
+    }
+  },
+  {
+    "name": "connection",
+    "value": {
+      "kind": "text",
+      "value": "keep-alive"
+    }
+  },
+  {
+    "name": "server",
+    "value": {
+      "kind": "text",
+      "value": "cloudflare"
+    }
+  },
+  {
+    "name": "x-codex-active-limit",
+    "value": {
+      "kind": "text",
+      "value": "premium"
+    }
+  },
+  {
+    "name": "x-codex-plan-type",
+    "value": {
+      "kind": "text",
+      "value": "prolite"
+    }
+  },
+  {
+    "name": "x-codex-primary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "1"
+    }
+  },
+  {
+    "name": "x-codex-secondary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "19"
+    }
+  },
+  {
+    "name": "x-codex-primary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "300"
+    }
+  },
+  {
+    "name": "x-codex-primary-over-secondary-limit-percent",
+    "value": {
+      "kind": "text",
+      "value": "0"
+    }
+  },
+  {
+    "name": "x-codex-secondary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "10080"
+    }
+  },
+  {
+    "name": "x-codex-primary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "17354"
+    }
+  },
+  {
+    "name": "x-codex-secondary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "468123"
+    }
+  },
+  {
+    "name": "x-codex-primary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "1783135874"
+    }
+  },
+  {
+    "name": "x-codex-secondary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "1783586642"
+    }
+  },
+  {
+    "name": "x-codex-credits-has-credits",
+    "value": {
+      "kind": "text",
+      "value": "False"
+    }
+  },
+  {
+    "name": "x-codex-credits-balance",
+    "value": {
+      "kind": "text",
+      "value": ""
+    }
+  },
+  {
+    "name": "x-codex-credits-unlimited",
+    "value": {
+      "kind": "text",
+      "value": "False"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "0"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "0"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "300"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-over-secondary-limit-percent",
+    "value": {
+      "kind": "text",
+      "value": "0"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "10080"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "18000"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "604800"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "1783136520"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "1783723320"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-limit-name",
+    "value": {
+      "kind": "text",
+      "value": "GPT-5.3-Codex-Spark"
+    }
+  },
+  {
+    "name": "x-models-etag",
+    "value": {
+      "kind": "text",
+      "value": "W/\"d5ec51c0d218e9a0503ff4bd047d253b\""
+    }
+  },
+  {
+    "name": "x-oai-request-id",
+    "value": {
+      "kind": "text",
+      "value": "fd0b7fe7-bff5-4830-8a81-774b14e8b180"
+    }
+  },
+  {
+    "name": "x-openai-proxy-wasm",
+    "value": {
+      "kind": "text",
+      "value": "v0.1"
+    }
+  },
+  {
+    "name": "cf-cache-status",
+    "value": {
+      "kind": "text",
+      "value": "DYNAMIC"
+    }
+  },
+  {
+    "name": "cross-origin-opener-policy",
+    "value": {
+      "kind": "text",
+      "value": "same-origin-allow-popups"
+    }
+  },
+  {
+    "name": "strict-transport-security",
+    "value": {
+      "kind": "text",
+      "value": "max-age=31536000; includeSubDomains; preload"
+    }
+  },
+  {
+    "name": "x-content-type-options",
+    "value": {
+      "kind": "text",
+      "value": "nosniff"
+    }
+  },
+  {
+    "name": "set-cookie",
+    "value": {
+      "kind": "text",
+      "value": "__cf_bm=DaoV5Akd9LLJFhBDXy3m2NWv_H1DK9FFtTdT7G746Xs-1783118520.5338924-1.0.1.1-QSR1EEFMtxVRI_6SgskFn92mH0ksh9aORdeguOyUpaMWltkcLnIoOiVqymQ7ZAITz5OCdpvJqTrIi2gzXSnQ_XPh5gYOBSWm5SOxKNeySb4UazE3YP1T2CFZtLROF683; HttpOnly; SameSite=None; Secure; Path=/; Domain=chatgpt.com; Expires=Fri, 03 Jul 2026 23:12:01 GMT"
+    }
+  },
+  {
+    "name": "report-to",
+    "value": {
+      "kind": "text",
+      "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=c3MfIfFWDZmclC2OnQB3uyk1%2FrGLMG1b68NJkyKtBMwpAQMRPkp85oDUSQVDWPw1AvKKBzt%2Fd8IBxGCBYoLC1kelbKn57kriCagT5Mly%2BfezwNx7hB%2B8KcjyjFwM\"}]}"
+    }
+  },
+  {
+    "name": "nel",
+    "value": {
+      "kind": "text",
+      "value": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.01,\"max_age\":604800}"
+    }
+  },
+  {
+    "name": "referrer-policy",
+    "value": {
+      "kind": "text",
+      "value": "strict-origin-when-cross-origin"
+    }
+  },
+  {
+    "name": "cf-ray",
+    "value": {
+      "kind": "text",
+      "value": "a15966a158eac713-NRT"
+    }
+  }
+]

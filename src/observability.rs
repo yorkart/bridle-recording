@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use axum::{
     extract::{Path as AxumPath, State},
     http::{header::CONTENT_TYPE, StatusCode},
@@ -12,8 +12,12 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
-use tokio::fs;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+};
 
 use crate::{
     constants::UNKNOWN_SESSION,
@@ -55,6 +59,23 @@ pub async fn session(
     }
 }
 
+pub async fn save_testset(
+    State(state): State<GatewayState>,
+    AxumPath((profile, session_id)): AxumPath<(String, String)>,
+    Json(request): Json<SaveTestsetRequest>,
+) -> Response {
+    match save_testset_inner(&state, &profile, &session_id, request.replace).await {
+        Ok(saved) => Json(saved).into_response(),
+        Err(SaveTestsetError::Conflict(conflict)) => (
+            StatusCode::CONFLICT,
+            [(CONTENT_TYPE, "application/json")],
+            serde_json::to_string(&conflict).unwrap_or_else(|_| "{}".to_owned()),
+        )
+            .into_response(),
+        Err(SaveTestsetError::Other(err)) => api_error(StatusCode::BAD_REQUEST, err),
+    }
+}
+
 fn api_error(status: StatusCode, err: anyhow::Error) -> Response {
     (
         status,
@@ -66,6 +87,86 @@ fn api_error(status: StatusCode, err: anyhow::Error) -> Response {
         .to_string(),
     )
         .into_response()
+}
+
+async fn save_testset_inner(
+    state: &GatewayState,
+    profile: &str,
+    session_id: &str,
+    replace: bool,
+) -> Result<SavedTestset, SaveTestsetError> {
+    let profile_config = state
+        .profiles
+        .get(profile)
+        .with_context(|| format!("unknown profile: {profile}"))?;
+    let source_dir = profile_config.home_dir.join("recordings").join(session_id);
+    if !fs::try_exists(&source_dir).await? {
+        return Err(anyhow!("recording session not found: {}", source_dir.display()).into());
+    }
+
+    let observed = session_inner(state, profile, session_id).await?;
+    let first_user_input = observed
+        .turns
+        .first()
+        .map(|turn| turn.user.trim().to_owned())
+        .filter(|input| !input.is_empty())
+        .with_context(|| format!("session {session_id} has no visible user input"))?;
+    let user_input_sha256 = sha256_hex(first_user_input.as_bytes());
+    let repo_root = std::env::current_dir().context("resolve current git repository root")?;
+    let testset_dir = repo_root
+        .join("testsets")
+        .join(profile)
+        .join(&user_input_sha256);
+    let raw_dir = testset_dir.join("raw").join(session_id);
+
+    if fs::try_exists(&testset_dir).await? && !replace {
+        return Err(SaveTestsetError::Conflict(SaveTestsetConflict {
+            error: "testset already exists".to_owned(),
+            replace_required: true,
+            profile: profile.to_owned(),
+            session_id: session_id.to_owned(),
+            first_user_input,
+            user_input_sha256,
+            testset_path: testset_dir.display().to_string(),
+        }));
+    }
+
+    let temp_dir = repo_root
+        .join("testsets")
+        .join(profile)
+        .join(format!(".{user_input_sha256}.tmp"));
+    if fs::try_exists(&temp_dir).await? {
+        fs::remove_dir_all(&temp_dir).await?;
+    }
+    fs::create_dir_all(&temp_dir).await?;
+    copy_dir_all(&source_dir, &temp_dir.join("raw").join(session_id)).await?;
+
+    let manifest = TestsetManifest {
+        version: 1,
+        profile: profile.to_owned(),
+        source_session_id: session_id.to_owned(),
+        first_user_input: first_user_input.clone(),
+        user_input_sha256: user_input_sha256.clone(),
+        saved_at: crate::util::now_rfc3339(),
+        source_recording_path: source_dir.display().to_string(),
+        raw_recording_path: format!("raw/{session_id}"),
+    };
+    write_json_pretty(temp_dir.join("testset.json"), &manifest).await?;
+
+    if fs::try_exists(&testset_dir).await? {
+        fs::remove_dir_all(&testset_dir).await?;
+    }
+    fs::rename(&temp_dir, &testset_dir).await?;
+
+    Ok(SavedTestset {
+        status: if replace { "replaced" } else { "saved" }.to_owned(),
+        profile: profile.to_owned(),
+        session_id: session_id.to_owned(),
+        first_user_input,
+        user_input_sha256,
+        testset_path: testset_dir.display().to_string(),
+        raw_path: raw_dir.display().to_string(),
+    })
 }
 
 async fn sessions_inner(
@@ -422,7 +523,7 @@ fn visible_user_messages(blocks: &[PromptBlock]) -> Vec<String> {
     blocks
         .iter()
         .filter(|block| block.role == "user" && !is_derived_context_block(&block.block_type))
-        .map(|block| block.excerpt.clone())
+        .map(|block| block.text.clone())
         .collect()
 }
 
@@ -661,6 +762,141 @@ where
         .await
         .with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+async fn write_json_pretty<T>(path: PathBuf, value: &T) -> anyhow::Result<()>
+where
+    T: Serialize,
+{
+    let mut bytes = serde_json::to_vec_pretty(value).context("serialize testset manifest")?;
+    bytes.push(b'\n');
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+    let mut file = fs::File::create(&path)
+        .await
+        .with_context(|| format!("create {}", path.display()))?;
+    file.write_all(&bytes)
+        .await
+        .with_context(|| format!("write {}", path.display()))?;
+    file.flush()
+        .await
+        .with_context(|| format!("flush {}", path.display()))
+}
+
+async fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(destination)
+        .await
+        .with_context(|| format!("create {}", destination.display()))?;
+    let mut stack = vec![(source.to_path_buf(), destination.to_path_buf())];
+    while let Some((source_dir, destination_dir)) = stack.pop() {
+        let mut entries = fs::read_dir(&source_dir)
+            .await
+            .with_context(|| format!("read {}", source_dir.display()))?;
+        while let Some(entry) = entries.next_entry().await? {
+            let source_path = entry.path();
+            let destination_path = destination_dir.join(entry.file_name());
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                fs::create_dir_all(&destination_path)
+                    .await
+                    .with_context(|| format!("create {}", destination_path.display()))?;
+                stack.push((source_path, destination_path));
+            } else if file_type.is_file() {
+                copy_file_verbatim(&source_path, &destination_path).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn copy_file_verbatim(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let mut input = fs::File::open(source)
+        .await
+        .with_context(|| format!("open {}", source.display()))?;
+    let mut output = fs::File::create(destination)
+        .await
+        .with_context(|| format!("create {}", destination.display()))?;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .await
+            .with_context(|| format!("read {}", source.display()))?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .await
+            .with_context(|| format!("write {}", destination.display()))?;
+    }
+    output
+        .flush()
+        .await
+        .with_context(|| format!("flush {}", destination.display()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+enum SaveTestsetError {
+    Conflict(SaveTestsetConflict),
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for SaveTestsetError {
+    fn from(err: anyhow::Error) -> Self {
+        Self::Other(err)
+    }
+}
+
+impl From<std::io::Error> for SaveTestsetError {
+    fn from(err: std::io::Error) -> Self {
+        Self::Other(err.into())
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SaveTestsetRequest {
+    #[serde(default)]
+    replace: bool,
+}
+
+#[derive(Serialize)]
+struct SaveTestsetConflict {
+    error: String,
+    replace_required: bool,
+    profile: String,
+    session_id: String,
+    first_user_input: String,
+    user_input_sha256: String,
+    testset_path: String,
+}
+
+#[derive(Serialize)]
+struct SavedTestset {
+    status: String,
+    profile: String,
+    session_id: String,
+    first_user_input: String,
+    user_input_sha256: String,
+    testset_path: String,
+    raw_path: String,
+}
+
+#[derive(Serialize)]
+struct TestsetManifest {
+    version: u32,
+    profile: String,
+    source_session_id: String,
+    first_user_input: String,
+    user_input_sha256: String,
+    saved_at: String,
+    source_recording_path: String,
+    raw_recording_path: String,
 }
 
 #[derive(Serialize)]
