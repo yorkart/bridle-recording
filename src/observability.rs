@@ -367,10 +367,26 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         .await
         .with_context(|| format!("read request body in {}", request_dir.display()))?;
     let request_body = decode_request_body_json(&request_body_bytes)?;
-    let sse_bytes = fs::read(request_dir.join("response_sse.raw"))
-        .await
-        .with_context(|| format!("read response_sse.raw in {}", request_dir.display()))?;
-    let sse = parse_response_sse(&sse_bytes);
+    let sse_path = request_dir.join("response_sse.raw");
+    let (sse, response_preview) = if fs::try_exists(&sse_path).await? {
+        let sse_bytes = fs::read(&sse_path)
+            .await
+            .with_context(|| format!("read response_sse.raw in {}", request_dir.display()))?;
+        (parse_response_sse(&sse_bytes), None)
+    } else {
+        let body_path = request_dir.join("response_body.raw");
+        let body = fs::read(&body_path)
+            .await
+            .with_context(|| format!("read response_body.raw in {}", request_dir.display()))?;
+        if looks_like_sse_response(&body) {
+            (parse_response_sse(&body), None)
+        } else {
+            (
+                ParsedResponseSse::default(),
+                Some(response_body_preview(&body)),
+            )
+        }
+    };
     let files = request_files(&request_dir).await?;
 
     let prompt_blocks = prompt_blocks(&request_body);
@@ -435,7 +451,11 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         previous_function_calls,
         previous_assistant_messages,
         function_calls: sse.function_calls,
-        output_text: sse.output_text.trim().to_owned(),
+        output_text: if sse.output_text.trim().is_empty() {
+            response_preview.unwrap_or_default()
+        } else {
+            sse.output_text.trim().to_owned()
+        },
         usage: sse.completed_response.get("usage").cloned(),
         event_counts: sse.event_counts,
         files,
@@ -458,6 +478,41 @@ fn decode_request_body_json(bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
             serde_json::from_slice(&decoded)
                 .with_context(|| format!("parse decoded request body as json after {json_err}"))
         }
+    }
+}
+
+fn response_body_preview(bytes: &[u8]) -> String {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text.trim(),
+        Err(_) => return format!("<{} bytes binary response>", bytes.len()),
+    };
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let preview = serde_json::from_str::<serde_json::Value>(text)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| text.to_owned());
+    truncate_chars(&preview, 2000)
+}
+
+fn looks_like_sse_response(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("event:") || line.starts_with("data:")
+    })
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
     }
 }
 
@@ -1107,6 +1162,7 @@ struct ObservedFile {
     bytes: u64,
 }
 
+#[derive(Default)]
 struct ParsedResponseSse {
     output_text: String,
     function_calls: Vec<ObservedFunctionCall>,

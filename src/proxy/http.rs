@@ -76,7 +76,10 @@ pub async fn handle_proxy(
     {
         Ok(dir) => dir,
         Err(err) => {
-            warn!(?err, "http recording setup failed; continuing without recording");
+            warn!(
+                ?err,
+                "http recording setup failed; continuing without recording"
+            );
             None
         }
     };
@@ -95,7 +98,8 @@ pub async fn handle_proxy(
         Err(err) => {
             if let Some(request_dir) = request_dir.as_deref() {
                 if let Err(write_err) =
-                    write_error_response_meta(request_dir, started_at.clone(), err.to_string()).await
+                    write_error_response_meta(request_dir, started_at.clone(), err.to_string())
+                        .await
                 {
                     warn!(?write_err, "failed to record upstream HTTP error");
                 }
@@ -142,7 +146,8 @@ pub async fn handle_proxy(
             Err(err) => {
                 if let Some(request_dir) = request_dir.as_deref() {
                     if let Err(write_err) =
-                        write_error_response_meta(request_dir, started_at.clone(), err.to_string()).await
+                        write_error_response_meta(request_dir, started_at.clone(), err.to_string())
+                            .await
                     {
                         warn!(?write_err, "failed to record buffered HTTP read error");
                     }
@@ -151,7 +156,8 @@ pub async fn handle_proxy(
             }
         };
         if let Some(request_dir) = request_dir.as_ref() {
-            if let Err(err) = write_bytes_file(request_dir.join("response_body.raw"), &bytes).await {
+            if let Err(err) = write_bytes_file(request_dir.join("response_body.raw"), &bytes).await
+            {
                 warn!(?err, "failed to record HTTP response body");
             }
         }
@@ -164,7 +170,9 @@ pub async fn handle_proxy(
             upstream_error: None,
         };
         if let Some(request_dir) = request_dir.as_ref() {
-            if let Err(err) = write_json_file(request_dir.join("response_meta.json"), &response_meta).await {
+            if let Err(err) =
+                write_json_file(request_dir.join("response_meta.json"), &response_meta).await
+            {
                 warn!(?err, "failed to record HTTP response metadata");
             }
         }

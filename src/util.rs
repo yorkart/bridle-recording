@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context};
 use axum::http::{
     header::{
-        HeaderName, CONNECTION, CONTENT_TYPE, HOST, SEC_WEBSOCKET_ACCEPT,
-        SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL,
-        SEC_WEBSOCKET_VERSION, UPGRADE,
+        HeaderName, CONNECTION, CONTENT_TYPE, HOST, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_EXTENSIONS,
+        SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE,
     },
     HeaderMap, Method,
 };
@@ -218,7 +217,10 @@ pub fn request_dir(output_dir: &Path, session_id: &str, index: u64) -> PathBuf {
         .join(format!("{index:06}"))
 }
 
-pub async fn next_existing_request_index(output_dir: &Path, session_id: &str) -> anyhow::Result<u64> {
+pub async fn next_existing_request_index(
+    output_dir: &Path,
+    session_id: &str,
+) -> anyhow::Result<u64> {
     let requests_dir = output_dir.join(session_id).join("requests");
     let mut max_seen: Option<u64> = None;
     let mut entries = match fs::read_dir(&requests_dir).await {

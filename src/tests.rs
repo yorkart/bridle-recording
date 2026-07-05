@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use axum::{
     body::Body,
     extract::ws::WebSocketUpgrade,
-    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header::CONTENT_ENCODING},
+    http::{header::CONTENT_ENCODING, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
     routing::any,
     Router,
 };
@@ -16,28 +16,39 @@ use tower::ServiceExt;
 
 use crate::{
     app::proxy,
-    constants::{
-        CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, UNKNOWN_SESSION,
-    },
+    constants::{CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, UNKNOWN_SESSION},
     matcher::build_request_match,
     proxy::replay::handle_mock_proxy,
     recording::{headers_to_records, write_bytes_file, write_json_file},
     sse::SseParser,
-    types::{AppState, GatewayState, HeaderRecord, HeaderValueRecord, ProfileConfig, ProxyMode, ResponseMeta, ResponseRewriteReplacement, ResponseRewriteSpec, SessionSource},
+    types::{
+        AppState, GatewayState, HeaderRecord, HeaderValueRecord, ProfileConfig, ProxyMode,
+        ResponseMeta, ResponseRewriteReplacement, ResponseRewriteSpec, SessionSource,
+    },
     util::{
-        build_upstream_url, expects_sse, next_existing_request_index,
-        now_rfc3339, request_dir, sanitize_session_id, session_from_headers,
-        should_forward_http_header, should_forward_response_header,
+        build_upstream_url, expects_sse, next_existing_request_index, now_rfc3339, request_dir,
+        sanitize_session_id, session_from_headers, should_forward_http_header,
+        should_forward_response_header,
     },
 };
 
 #[test]
 fn retries_on_expected_upstream_statuses() {
-    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::BAD_GATEWAY));
-    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
-    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
-    assert!(super::proxy::http::should_retry_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-    assert!(!super::proxy::http::should_retry_status(reqwest::StatusCode::UNAUTHORIZED));
+    assert!(super::proxy::http::should_retry_status(
+        reqwest::StatusCode::BAD_GATEWAY
+    ));
+    assert!(super::proxy::http::should_retry_status(
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    ));
+    assert!(super::proxy::http::should_retry_status(
+        reqwest::StatusCode::GATEWAY_TIMEOUT
+    ));
+    assert!(super::proxy::http::should_retry_status(
+        reqwest::StatusCode::TOO_MANY_REQUESTS
+    ));
+    assert!(!super::proxy::http::should_retry_status(
+        reqwest::StatusCode::UNAUTHORIZED
+    ));
 }
 
 #[test]
@@ -283,10 +294,10 @@ fn whitelist_match_ignores_environment_date_and_timezone() {
         }"#,
     );
 
-    let recorded_match = build_request_match(&method, "responses", None, &HeaderMap::new(), &body_a)
-        .unwrap();
-    let live_match = build_request_match(&method, "responses", None, &HeaderMap::new(), &body_b)
-        .unwrap();
+    let recorded_match =
+        build_request_match(&method, "responses", None, &HeaderMap::new(), &body_a).unwrap();
+    let live_match =
+        build_request_match(&method, "responses", None, &HeaderMap::new(), &body_b).unwrap();
 
     assert_eq!(recorded_match.hash, live_match.hash);
     let text = recorded_match
@@ -354,7 +365,8 @@ data: {"type":"response.created","response":{"id":"resp_recorded","status":"in_p
                     event_lines.push(line.to_owned());
                 }
             }
-            let mut value: serde_json::Value = serde_json::from_str(&data_lines.join("\n")).unwrap();
+            let mut value: serde_json::Value =
+                serde_json::from_str(&data_lines.join("\n")).unwrap();
             let target = value.pointer_mut("/response/id").unwrap();
             *target = serde_json::json!("resp_live");
             event_lines.push(format!("data: {}", serde_json::to_string(&value).unwrap()));
@@ -496,7 +508,9 @@ async fn proxies_and_records_websocket_frames() {
                         match message {
                             axum::extract::ws::Message::Text(text) => {
                                 let _ = socket
-                                    .send(axum::extract::ws::Message::Text(format!("echo:{text}").into()))
+                                    .send(axum::extract::ws::Message::Text(
+                                        format!("echo:{text}").into(),
+                                    ))
                                     .await;
                             }
                             axum::extract::ws::Message::Close(close) => {
@@ -528,9 +542,10 @@ async fn proxies_and_records_websocket_frames() {
         axum::serve(recorder_listener, app).await.unwrap();
     });
 
-    let (mut ws, _) = connect_async(format!("ws://{recorder_addr}/codex-websocket/ws?case=record").as_str())
-        .await
-        .unwrap();
+    let (mut ws, _) =
+        connect_async(format!("ws://{recorder_addr}/codex-websocket/ws?case=record").as_str())
+            .await
+            .unwrap();
     ws.send(TestWsMessage::Text("hello".into())).await.unwrap();
     let echoed = ws.next().await.unwrap().unwrap();
     assert_eq!(echoed.into_text().unwrap(), "echo:hello");
@@ -592,7 +607,9 @@ async fn rejects_websocket_on_http_only_profile() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        let app = Router::new().route("/:profile/*path", any(proxy)).with_state(state);
+        let app = Router::new()
+            .route("/:profile/*path", any(proxy))
+            .with_state(state);
         axum::serve(listener, app).await.unwrap();
     });
 

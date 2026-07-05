@@ -28,8 +28,7 @@ use tokio_tungstenite::{
 
 use crate::{
     recording::{
-        headers_to_records, write_bytes_file, write_json_file, write_manifest,
-        write_websocket_meta,
+        headers_to_records, write_bytes_file, write_json_file, write_manifest, write_websocket_meta,
     },
     types::{
         AppState, RequestMeta, WebSocketCloseRecord, WebSocketDirection, WebSocketFrameRecord,
@@ -83,7 +82,10 @@ pub async fn prepare_websocket_proxy(
     {
         Ok(request_dir) => request_dir,
         Err(err) => {
-            tracing::warn!(?err, "websocket recording setup failed; continuing without recording");
+            tracing::warn!(
+                ?err,
+                "websocket recording setup failed; continuing without recording"
+            );
             None
         }
     };
@@ -123,32 +125,26 @@ async fn run_websocket_proxy_inner(
 
     let upstream_socket = connect_upstream_socket(&prepared.upstream_url).await?;
 
-    let (upstream, upstream_response) = match client_async_tls_with_config(
-        upstream_request,
-        upstream_socket,
-        None,
-        None,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(err) => {
-            maybe_write_websocket_meta(
-                prepared.request_dir.as_deref(),
-                WebSocketMeta {
-                    status: "connect_failed",
-                    started_at: prepared.started_at,
-                    completed_at: now_rfc3339(),
-                    upstream_url: prepared.upstream_url.to_string(),
-                    client_to_upstream_frames: 0,
-                    upstream_to_client_frames: 0,
-                    error: Some(err.to_string()),
-                },
-            )
-            .await;
-            return Err(anyhow!("connect upstream websocket failed: {err}"));
-        }
-    };
+    let (upstream, upstream_response) =
+        match client_async_tls_with_config(upstream_request, upstream_socket, None, None).await {
+            Ok(result) => result,
+            Err(err) => {
+                maybe_write_websocket_meta(
+                    prepared.request_dir.as_deref(),
+                    WebSocketMeta {
+                        status: "connect_failed",
+                        started_at: prepared.started_at,
+                        completed_at: now_rfc3339(),
+                        upstream_url: prepared.upstream_url.to_string(),
+                        client_to_upstream_frames: 0,
+                        upstream_to_client_frames: 0,
+                        error: Some(err.to_string()),
+                    },
+                )
+                .await;
+                return Err(anyhow!("connect upstream websocket failed: {err}"));
+            }
+        };
 
     if let Some(request_dir) = prepared.request_dir.as_ref() {
         if let Err(err) = write_json_file(
@@ -332,7 +328,11 @@ fn env_proxy<const N: usize>(keys: [&str; N]) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-async fn connect_via_proxy(proxy_url: &str, host: &str, port: u16) -> anyhow::Result<UpstreamSocket> {
+async fn connect_via_proxy(
+    proxy_url: &str,
+    host: &str,
+    port: u16,
+) -> anyhow::Result<UpstreamSocket> {
     let proxy = Url::parse(proxy_url).with_context(|| format!("parse proxy URL {proxy_url}"))?;
     let proxy_host = proxy
         .host_str()
@@ -345,13 +345,17 @@ async fn connect_via_proxy(proxy_url: &str, host: &str, port: u16) -> anyhow::Re
         "socks5" | "socks5h" => {
             let stream = Socks5Stream::connect((proxy_host, proxy_port), (host, port))
                 .await
-                .with_context(|| format!("connect websocket via SOCKS5 proxy {proxy_host}:{proxy_port}"))?;
+                .with_context(|| {
+                    format!("connect websocket via SOCKS5 proxy {proxy_host}:{proxy_port}")
+                })?;
             Ok(UpstreamSocket::Socks5(stream))
         }
         "http" | "https" => {
             let mut stream = TcpStream::connect((proxy_host, proxy_port))
                 .await
-                .with_context(|| format!("connect websocket via HTTP proxy {proxy_host}:{proxy_port}"))?;
+                .with_context(|| {
+                    format!("connect websocket via HTTP proxy {proxy_host}:{proxy_port}")
+                })?;
 
             let connect_request = format!(
                 "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nProxy-Connection: Keep-Alive\r\nConnection: Keep-Alive\r\n\r\n"
@@ -369,7 +373,9 @@ async fn connect_via_proxy(proxy_url: &str, host: &str, port: u16) -> anyhow::Re
                     .await
                     .context("read HTTP CONNECT response")?;
                 if read == 0 {
-                    return Err(anyhow!("HTTP proxy closed while establishing CONNECT tunnel"));
+                    return Err(anyhow!(
+                        "HTTP proxy closed while establishing CONNECT tunnel"
+                    ));
                 }
                 response.extend_from_slice(&buf[..read]);
                 if response.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -389,12 +395,15 @@ async fn connect_via_proxy(proxy_url: &str, host: &str, port: u16) -> anyhow::Re
             let Some(status_line) = header_text.lines().next() else {
                 return Err(anyhow!("missing HTTP CONNECT status line"));
             };
-            if !(status_line.starts_with("HTTP/1.1 200") || status_line.starts_with("HTTP/1.0 200")) {
+            if !(status_line.starts_with("HTTP/1.1 200") || status_line.starts_with("HTTP/1.0 200"))
+            {
                 return Err(anyhow!("HTTP proxy CONNECT failed: {status_line}"));
             }
             Ok(UpstreamSocket::Tcp(stream))
         }
-        scheme => Err(anyhow!("unsupported proxy scheme for websocket upstream: {scheme}")),
+        scheme => Err(anyhow!(
+            "unsupported proxy scheme for websocket upstream: {scheme}"
+        )),
     }
 }
 
@@ -424,11 +433,7 @@ impl WebSocketRecorder {
         }
     }
 
-    async fn record_axum(
-        &self,
-        direction: WebSocketDirection,
-        message: &AxumWsMessage,
-    ) {
+    async fn record_axum(&self, direction: WebSocketDirection, message: &AxumWsMessage) {
         let record = self.next_record(direction, axum_ws_opcode(message)).await;
         let record = match message {
             AxumWsMessage::Text(text) => WebSocketFrameRecord {
