@@ -362,7 +362,12 @@ async fn load_observed_calls(session_dir: &Path) -> anyhow::Result<Vec<ObservedC
 
 async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Result<ObservedCall> {
     let request_meta = read_json::<RequestMeta>(&request_dir.join("request_meta.json")).await?;
-    let response_meta = read_json::<ResponseMeta>(&request_dir.join("response_meta.json")).await?;
+    let response_meta_path = request_dir.join("response_meta.json");
+    let response_meta = if fs::try_exists(&response_meta_path).await? {
+        Some(read_json::<ResponseMeta>(&response_meta_path).await?)
+    } else {
+        None
+    };
     let request_body_bytes = fs::read(request_dir.join("request_body.raw"))
         .await
         .with_context(|| format!("read request body in {}", request_dir.display()))?;
@@ -375,15 +380,22 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         (parse_response_sse(&sse_bytes), None)
     } else {
         let body_path = request_dir.join("response_body.raw");
-        let body = fs::read(&body_path)
-            .await
-            .with_context(|| format!("read response_body.raw in {}", request_dir.display()))?;
-        if looks_like_sse_response(&body) {
-            (parse_response_sse(&body), None)
+        if fs::try_exists(&body_path).await? {
+            let body = fs::read(&body_path)
+                .await
+                .with_context(|| format!("read response_body.raw in {}", request_dir.display()))?;
+            if looks_like_sse_response(&body) {
+                (parse_response_sse(&body), None)
+            } else {
+                (
+                    ParsedResponseSse::default(),
+                    Some(response_body_preview(&body)),
+                )
+            }
         } else {
             (
                 ParsedResponseSse::default(),
-                Some(response_body_preview(&body)),
+                Some("<response not recorded yet>".to_owned()),
             )
         }
     };
@@ -396,7 +408,9 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
     let previous_function_calls = previous_function_calls(&request_body);
     let previous_assistant_messages = previous_assistant_messages(&prompt_blocks);
 
-    let duration_ms = duration_ms(&response_meta.started_at, &response_meta.completed_at);
+    let duration_ms = response_meta
+        .as_ref()
+        .and_then(|meta| duration_ms(&meta.started_at, &meta.completed_at));
     let response_id = sse
         .completed_response
         .get("id")
@@ -430,11 +444,14 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
             response_id
         },
         started_at: request_meta.started_at,
-        completed_at: response_meta.completed_at,
+        completed_at: response_meta
+            .as_ref()
+            .map(|meta| meta.completed_at.clone())
+            .unwrap_or_default(),
         duration_ms,
         method: request_meta.method,
         path: request_meta.path,
-        status: response_meta.status,
+        status: response_meta.as_ref().map(|meta| meta.status).unwrap_or(0),
         model,
         stream,
         input_count,
@@ -461,7 +478,10 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         files,
         raw_dir: request_dir.display().to_string(),
         request_body_bytes: request_meta.request_body_bytes,
-        response_body_bytes: response_meta.response_body_bytes,
+        response_body_bytes: response_meta
+            .as_ref()
+            .map(|meta| meta.response_body_bytes)
+            .unwrap_or(0),
     })
 }
 

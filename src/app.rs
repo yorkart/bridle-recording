@@ -12,6 +12,7 @@ use tokio::{fs, net::TcpListener};
 use tracing::{error, info, warn};
 
 use crate::{
+    constants::{UPSTREAM_POOL_IDLE_TIMEOUT_SECS, UPSTREAM_TCP_KEEPALIVE_SECS},
     proxy::{
         http::handle_proxy,
         replay::handle_mock_proxy,
@@ -35,7 +36,10 @@ pub async fn run() -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
+        .pool_idle_timeout(std::time::Duration::from_secs(
+            UPSTREAM_POOL_IDLE_TIMEOUT_SECS,
+        ))
+        .tcp_keepalive(std::time::Duration::from_secs(UPSTREAM_TCP_KEEPALIVE_SECS))
         .build()
         .context("build upstream HTTP client")?;
     let profile_root = default_profile_root();

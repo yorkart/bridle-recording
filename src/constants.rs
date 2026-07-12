@@ -20,3 +20,5 @@ pub const IGNORED_INPUT_TEXT_PREFIXES: &[&str] = &[
     "<plugins_instructions>",
 ];
 pub const UPSTREAM_MAX_ATTEMPTS: usize = 3;
+pub const UPSTREAM_POOL_IDLE_TIMEOUT_SECS: u64 = 5 * 60;
+pub const UPSTREAM_TCP_KEEPALIVE_SECS: u64 = 60;
