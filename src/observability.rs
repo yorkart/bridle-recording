@@ -393,10 +393,18 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
                 )
             }
         } else {
-            (
-                ParsedResponseSse::default(),
-                Some("<response not recorded yet>".to_owned()),
-            )
+            let preview = match response_meta.as_ref() {
+                Some(meta) if meta.upstream_error.is_some() => format!(
+                    "<response stream failed: {}>",
+                    meta.upstream_error
+                        .as_deref()
+                        .unwrap_or("unknown upstream error")
+                ),
+                Some(meta) if meta.response_body_bytes == 0 => "<empty response body>".to_owned(),
+                Some(_) => "<response body recording unavailable>".to_owned(),
+                None => "<response recording incomplete>".to_owned(),
+            };
+            (ParsedResponseSse::default(), Some(preview))
         }
     };
     let files = request_files(&request_dir).await?;

@@ -135,51 +135,16 @@ pub async fn handle_proxy(
             response_builder.header(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     }
 
-    if is_sse {
-        let body_stream = record_streaming_response(upstream_response, request_dir, started_at);
-        response_builder
-            .body(Body::from_stream(body_stream))
-            .context("build streaming response")
+    let recording_name = if is_sse {
+        "response_sse.raw"
     } else {
-        let bytes = match upstream_response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                if let Some(request_dir) = request_dir.as_deref() {
-                    if let Err(write_err) =
-                        write_error_response_meta(request_dir, started_at.clone(), err.to_string())
-                            .await
-                    {
-                        warn!(?write_err, "failed to record buffered HTTP read error");
-                    }
-                }
-                return Err(anyhow!("read upstream response body failed: {err}"));
-            }
-        };
-        if let Some(request_dir) = request_dir.as_ref() {
-            if let Err(err) = write_bytes_file(request_dir.join("response_body.raw"), &bytes).await
-            {
-                warn!(?err, "failed to record HTTP response body");
-            }
-        }
-        let response_meta = ResponseMeta {
-            status: status.as_u16(),
-            started_at,
-            completed_at: now_rfc3339(),
-            response_body_bytes: bytes.len(),
-            sse_event_count: 0,
-            upstream_error: None,
-        };
-        if let Some(request_dir) = request_dir.as_ref() {
-            if let Err(err) =
-                write_json_file(request_dir.join("response_meta.json"), &response_meta).await
-            {
-                warn!(?err, "failed to record HTTP response metadata");
-            }
-        }
-        response_builder
-            .body(Body::from(bytes))
-            .context("build buffered response")
-    }
+        "response_body.raw"
+    };
+    let body_stream =
+        record_streaming_response(upstream_response, request_dir, started_at, recording_name);
+    response_builder
+        .body(Body::from_stream(body_stream))
+        .context("build streaming response")
 }
 
 async fn send_upstream_with_retry(
@@ -287,11 +252,12 @@ fn record_streaming_response(
     upstream_response: reqwest::Response,
     request_dir: Option<PathBuf>,
     started_at: String,
+    recording_name: &'static str,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
     stream! {
         let status = upstream_response.status().as_u16();
         let mut stream = upstream_response.bytes_stream();
-        let mut raw_file = open_optional_file(request_dir.as_ref().map(|dir| dir.join("response_sse.raw"))).await;
+        let mut raw_file = open_optional_file(request_dir.as_ref().map(|dir| dir.join(recording_name))).await;
         let mut response_body_bytes = 0usize;
         let mut upstream_error = None;
 
@@ -300,10 +266,18 @@ fn record_streaming_response(
                 Ok(bytes) => {
                     response_body_bytes += bytes.len();
                     yield Ok(bytes.clone());
-                    if let Some(raw_file) = raw_file.as_mut() {
-                        if let Err(err) = raw_file.write_all(&bytes).await {
-                            warn!(?err, "failed to record raw SSE bytes");
+                    let recording_failed = if let Some(file) = raw_file.as_mut() {
+                        if let Err(err) = file.write_all(&bytes).await {
+                            warn!(?err, "failed to record raw HTTP response bytes");
+                            true
+                        } else {
+                            false
                         }
+                    } else {
+                        false
+                    };
+                    if recording_failed {
+                        raw_file = None;
                     }
                 }
                 Err(err) => {
@@ -315,7 +289,7 @@ fn record_streaming_response(
 
         if let Some(raw_file) = raw_file.as_mut() {
             if let Err(err) = raw_file.flush().await {
-                warn!(?err, "failed to flush raw SSE recording file");
+                warn!(?err, "failed to flush raw HTTP response recording file");
             }
         }
         let response_meta = ResponseMeta {
