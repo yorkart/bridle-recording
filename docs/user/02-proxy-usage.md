@@ -83,6 +83,11 @@ CODEX_HOME=~/.bridle-recording/codex-http
 NO_PROXY=127.0.0.1,localhost
 ```
 
+脚本还会在每次启动时通过 Codex 命令行配置显式注入
+`recorder-openai-http` provider 和
+`http://127.0.0.1:8787/codex-http`。即使 Codex 更新了该 home 下的
+`config.toml`，通过脚本启动的模型流量仍会经过 recorder。
+
 `NO_PROXY` 很重要，它保证客户端访问本机 recorder 时不会再次绕到系统代理。
 
 ## 配置 WebSocket 录制

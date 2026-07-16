@@ -86,8 +86,11 @@ Then start Codex with that agent home:
 ./scripts/run-codex-http.sh
 ```
 
-The helper script also sets `NO_PROXY=127.0.0.1,localhost` so local traffic to
-`http://127.0.0.1:8787` does not get sent back through your system proxy.
+The helper script injects the `recorder-openai-http` provider and local recorder
+URL on every launch. This keeps traffic routed through the recorder even if
+Codex updates the profile's `config.toml`. It also sets
+`NO_PROXY=127.0.0.1,localhost` so local traffic to `http://127.0.0.1:8787` does
+not get sent back through your system proxy.
 
 Equivalent manual command:
 

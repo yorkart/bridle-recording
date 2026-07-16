@@ -549,7 +549,7 @@ fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
     let mut event_counts = BTreeMap::new();
     let mut output_text = String::new();
     let mut function_calls = Vec::new();
-    let mut function_args = HashMap::new();
+    let mut tool_inputs = HashMap::new();
     let mut completed_response = serde_json::Value::Object(serde_json::Map::new());
 
     for event in parser.push(bytes) {
@@ -570,12 +570,15 @@ fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
                     output_text.push_str(delta);
                 }
             }
-            "response.function_call_arguments.done" => {
-                if let (Some(item_id), Some(arguments)) = (
+            "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
+                if let (Some(item_id), Some(input)) = (
                     value.get("item_id").and_then(serde_json::Value::as_str),
-                    value.get("arguments").and_then(serde_json::Value::as_str),
+                    value
+                        .get("arguments")
+                        .or_else(|| value.get("input"))
+                        .and_then(serde_json::Value::as_str),
                 ) {
-                    function_args.insert(item_id.to_owned(), arguments.to_owned());
+                    tool_inputs.insert(item_id.to_owned(), input.to_owned());
                 }
             }
             "response.output_item.done" => {
@@ -584,18 +587,19 @@ fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
                         if output_text.is_empty() {
                             output_text.push_str(&content_text(item.get("content")));
                         }
-                    } else if item.get("type").and_then(serde_json::Value::as_str)
-                        == Some("function_call")
-                    {
+                    } else if is_tool_call_type(
+                        item.get("type").and_then(serde_json::Value::as_str),
+                    ) {
                         let item_id = item
                             .get("id")
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default();
                         let arguments = item
                             .get("arguments")
+                            .or_else(|| item.get("input"))
                             .and_then(serde_json::Value::as_str)
                             .map(ToOwned::to_owned)
-                            .or_else(|| function_args.get(item_id).cloned())
+                            .or_else(|| tool_inputs.get(item_id).cloned())
                             .unwrap_or_default();
                         function_calls.push(ObservedFunctionCall {
                             id: item_id.to_owned(),
@@ -723,11 +727,28 @@ fn classify_prompt_block(role: &str, text: &str) -> String {
 }
 
 fn tool_definitions(request_body: &serde_json::Value) -> Vec<ToolDefinition> {
-    request_body
+    let top_level = request_body
         .get("tools")
         .and_then(serde_json::Value::as_array)
         .into_iter()
+        .flatten();
+    let additional = request_body
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
         .flatten()
+        .filter(|item| {
+            item.get("type").and_then(serde_json::Value::as_str) == Some("additional_tools")
+        })
+        .flat_map(|item| {
+            item.get("tools")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        });
+
+    top_level
+        .chain(additional)
         .map(|tool| {
             let function = tool.get("function");
             let name = tool
@@ -762,7 +783,10 @@ fn previous_tool_outputs(request_body: &serde_json::Value) -> Vec<ToolOutput> {
         .into_iter()
         .flatten()
         .filter(|item| {
-            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call_output")
+            matches!(
+                item.get("type").and_then(serde_json::Value::as_str),
+                Some("function_call_output" | "custom_tool_call_output")
+            )
         })
         .map(|item| ToolOutput {
             call_id: item
@@ -770,12 +794,7 @@ fn previous_tool_outputs(request_body: &serde_json::Value) -> Vec<ToolOutput> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
-            output: excerpt(
-                item.get("output")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default(),
-                1200,
-            ),
+            output: excerpt(&tool_output_text(item.get("output")), 1200),
         })
         .collect()
 }
@@ -786,9 +805,7 @@ fn previous_function_calls(request_body: &serde_json::Value) -> Vec<ObservedFunc
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|item| {
-            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
-        })
+        .filter(|item| is_tool_call_type(item.get("type").and_then(serde_json::Value::as_str)))
         .map(|item| ObservedFunctionCall {
             id: item
                 .get("id")
@@ -812,11 +829,16 @@ fn previous_function_calls(request_body: &serde_json::Value) -> Vec<ObservedFunc
                 .to_owned(),
             arguments: pretty_json_str(
                 item.get("arguments")
+                    .or_else(|| item.get("input"))
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default(),
             ),
         })
         .collect()
+}
+
+fn is_tool_call_type(item_type: Option<&str>) -> bool {
+    matches!(item_type, Some("function_call" | "custom_tool_call"))
 }
 
 async fn request_files(request_dir: &Path) -> anyhow::Result<Vec<ObservedFile>> {
@@ -904,6 +926,17 @@ fn content_text(value: Option<&serde_json::Value>) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+fn tool_output_text(value: Option<&serde_json::Value>) -> String {
+    let text = content_text(value);
+    if !text.is_empty() {
+        return text;
+    }
+    match value {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(value) => serde_json::to_string_pretty(value).unwrap_or_default(),
     }
 }
 
@@ -1196,6 +1229,91 @@ struct ParsedResponseSse {
     function_calls: Vec<ObservedFunctionCall>,
     completed_response: serde_json::Value,
     event_counts: BTreeMap<String, usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_custom_tool_call_from_sse() {
+        let bytes = br#"data: {"type":"response.custom_tool_call_input.done","item_id":"ctc_1","input":"{\"cmd\":\"pwd\"}"}
+
+data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"exec","status":"completed"}}
+
+"#;
+
+        let parsed = parse_response_sse(bytes);
+
+        assert_eq!(parsed.function_calls.len(), 1);
+        let call = &parsed.function_calls[0];
+        assert_eq!(call.id, "ctc_1");
+        assert_eq!(call.call_id, "call_1");
+        assert_eq!(call.name, "exec");
+        assert_eq!(call.status, "completed");
+        assert_eq!(call.arguments, "{\n  \"cmd\": \"pwd\"\n}");
+    }
+
+    #[test]
+    fn reads_additional_tool_definitions() {
+        let body = serde_json::json!({
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    {"type": "custom", "name": "exec", "description": "Run code"},
+                    {"type": "function", "name": "wait", "description": "Wait"}
+                ]
+            }]
+        });
+
+        let definitions = tool_definitions(&body);
+
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].name, "exec");
+        assert_eq!(definitions[0].tool_type, "custom");
+        assert_eq!(definitions[1].name, "wait");
+    }
+
+    #[test]
+    fn reads_custom_tool_call_history() {
+        let body = serde_json::json!({
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_1",
+                    "name": "exec",
+                    "status": "completed",
+                    "input": "ls -la"
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "process exited 0"},
+                        {"type": "input_text", "text": "5050"}
+                    ]
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_2",
+                    "output": "legacy output"
+                }
+            ]
+        });
+
+        let calls = previous_function_calls(&body);
+        let outputs = previous_tool_outputs(&body);
+
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "exec");
+        assert_eq!(calls[0].arguments, "ls -la");
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].call_id, "call_1");
+        assert_eq!(outputs[0].output, "process exited 0\n5050");
+        assert_eq!(outputs[1].call_id, "call_2");
+        assert_eq!(outputs[1].output, "legacy output");
+    }
 }
 
 const OBSERVABILITY_HTML: &str = include_str!("observability_ui.html");
