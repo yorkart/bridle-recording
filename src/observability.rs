@@ -363,33 +363,34 @@ async fn load_observed_calls(session_dir: &Path) -> anyhow::Result<Vec<ObservedC
 async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Result<ObservedCall> {
     let request_meta = read_json::<RequestMeta>(&request_dir.join("request_meta.json")).await?;
     let response_meta_path = request_dir.join("response_meta.json");
-    let response_meta = if fs::try_exists(&response_meta_path).await? {
-        Some(read_json::<ResponseMeta>(&response_meta_path).await?)
-    } else {
-        None
-    };
+    let (response_meta, recording_state, recording_warning) =
+        load_response_meta(&response_meta_path).await;
     let request_body_bytes = fs::read(request_dir.join("request_body.raw"))
         .await
         .with_context(|| format!("read request body in {}", request_dir.display()))?;
     let request_body = decode_request_body_json(&request_body_bytes)?;
     let sse_path = request_dir.join("response_sse.raw");
-    let (sse, response_preview) = if fs::try_exists(&sse_path).await? {
+    let (sse, response_preview, recorded_response_body_bytes) = if fs::try_exists(&sse_path).await?
+    {
         let sse_bytes = fs::read(&sse_path)
             .await
             .with_context(|| format!("read response_sse.raw in {}", request_dir.display()))?;
-        (parse_response_sse(&sse_bytes), None)
+        let byte_count = sse_bytes.len();
+        (parse_response_sse(&sse_bytes), None, Some(byte_count))
     } else {
         let body_path = request_dir.join("response_body.raw");
         if fs::try_exists(&body_path).await? {
             let body = fs::read(&body_path)
                 .await
                 .with_context(|| format!("read response_body.raw in {}", request_dir.display()))?;
+            let byte_count = body.len();
             if looks_like_sse_response(&body) {
-                (parse_response_sse(&body), None)
+                (parse_response_sse(&body), None, Some(byte_count))
             } else {
                 (
                     ParsedResponseSse::default(),
                     Some(response_body_preview(&body)),
+                    Some(byte_count),
                 )
             }
         } else {
@@ -404,7 +405,7 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
                 Some(_) => "<response body recording unavailable>".to_owned(),
                 None => "<response recording incomplete>".to_owned(),
             };
-            (ParsedResponseSse::default(), Some(preview))
+            (ParsedResponseSse::default(), Some(preview), None)
         }
     };
     let files = request_files(&request_dir).await?;
@@ -460,6 +461,8 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         method: request_meta.method,
         path: request_meta.path,
         status: response_meta.as_ref().map(|meta| meta.status).unwrap_or(0),
+        recording_state,
+        recording_warning,
         model,
         stream,
         input_count,
@@ -489,8 +492,59 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         response_body_bytes: response_meta
             .as_ref()
             .map(|meta| meta.response_body_bytes)
+            .or(recorded_response_body_bytes)
             .unwrap_or(0),
     })
+}
+
+async fn load_response_meta(path: &Path) -> (Option<ResponseMeta>, String, Option<String>) {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return (
+                None,
+                "incomplete".to_owned(),
+                Some("response metadata is missing or still being finalized".to_owned()),
+            );
+        }
+        Err(err) => {
+            return (
+                None,
+                "degraded".to_owned(),
+                Some(format!("response metadata could not be read: {err}")),
+            );
+        }
+    };
+
+    if bytes.is_empty() {
+        return (
+            None,
+            "incomplete".to_owned(),
+            Some("response metadata is empty or still being finalized".to_owned()),
+        );
+    }
+
+    match serde_json::from_slice::<ResponseMeta>(&bytes) {
+        Ok(meta) => {
+            let warning = meta
+                .upstream_error
+                .as_ref()
+                .map(|err| format!("upstream response stream failed: {err}"));
+            let state = if warning.is_some() {
+                "degraded"
+            } else {
+                "complete"
+            };
+            (Some(meta), state.to_owned(), warning)
+        }
+        Err(err) => (
+            None,
+            "incomplete".to_owned(),
+            Some(format!(
+                "response metadata is invalid or still being finalized: {err}"
+            )),
+        ),
+    }
 }
 
 fn decode_request_body_json(bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
@@ -1163,6 +1217,8 @@ struct ObservedCall {
     method: String,
     path: String,
     status: u16,
+    recording_state: String,
+    recording_warning: Option<String>,
     model: String,
     stream: bool,
     input_count: usize,
@@ -1313,6 +1369,32 @@ data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id"
         assert_eq!(outputs[0].output, "process exited 0\n5050");
         assert_eq!(outputs[1].call_id, "call_2");
         assert_eq!(outputs[1].output, "legacy output");
+    }
+
+    #[tokio::test]
+    async fn empty_response_metadata_marks_call_incomplete_without_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("response_meta.json");
+        std::fs::write(&path, b"").unwrap();
+
+        let (meta, state, warning) = load_response_meta(&path).await;
+
+        assert!(meta.is_none());
+        assert_eq!(state, "incomplete");
+        assert!(warning.unwrap().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn invalid_response_metadata_marks_call_incomplete_without_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("response_meta.json");
+        std::fs::write(&path, b"{").unwrap();
+
+        let (meta, state, warning) = load_response_meta(&path).await;
+
+        assert!(meta.is_none());
+        assert_eq!(state, "incomplete");
+        assert!(warning.unwrap().contains("invalid"));
     }
 }
 

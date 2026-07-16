@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use tokio::{
     fs::{self, File},
     io::AsyncWriteExt,
+    sync::mpsc,
 };
 use tracing::warn;
 
@@ -248,62 +249,152 @@ pub(crate) fn retry_delay(attempt: usize) -> std::time::Duration {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{routing::get, Router};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn response_recording_finalizes_after_downstream_body_is_dropped() {
+        let app = Router::new().route(
+            "/",
+            get(|| async {
+                let body = Body::from_stream(stream! {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                        b"event: response.completed\ndata: {\"status\":\"completed\"}\n\n",
+                    ));
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: trailing-bytes\n\n"));
+                });
+                axum::response::Response::builder()
+                    .header(CONTENT_TYPE, "text/event-stream")
+                    .body(body)
+                    .unwrap()
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let upstream_response = reqwest::get(format!("http://{addr}/")).await.unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let mut downstream = Box::pin(record_streaming_response(
+            upstream_response,
+            Some(temp.path().to_path_buf()),
+            now_rfc3339(),
+            "response_sse.raw",
+        ));
+
+        let first = downstream.next().await.unwrap().unwrap();
+        assert!(first.starts_with(b"event: response.completed"));
+        drop(downstream);
+
+        let meta_path = temp.path().join("response_meta.json");
+        for _ in 0..50 {
+            if meta_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let raw = std::fs::read_to_string(temp.path().join("response_sse.raw")).unwrap();
+        assert!(raw.contains("event: response.completed"));
+        assert!(raw.contains("data: trailing-bytes"));
+
+        let meta: ResponseMeta =
+            serde_json::from_slice(&std::fs::read(meta_path).unwrap()).unwrap();
+        assert_eq!(meta.status, 200);
+        assert_eq!(meta.response_body_bytes, raw.len());
+        assert!(meta.upstream_error.is_none());
+    }
+}
+
 fn record_streaming_response(
     upstream_response: reqwest::Response,
     request_dir: Option<PathBuf>,
     started_at: String,
     recording_name: &'static str,
 ) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
-    stream! {
-        let status = upstream_response.status().as_u16();
-        let mut stream = upstream_response.bytes_stream();
-        let mut raw_file = open_optional_file(request_dir.as_ref().map(|dir| dir.join(recording_name))).await;
-        let mut response_body_bytes = 0usize;
-        let mut upstream_error = None;
+    let (downstream_sender, mut downstream_receiver) = mpsc::channel(1);
+    tokio::spawn(record_response_in_background(
+        upstream_response,
+        request_dir,
+        started_at,
+        recording_name,
+        downstream_sender,
+    ));
 
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    response_body_bytes += bytes.len();
-                    yield Ok(bytes.clone());
-                    let recording_failed = if let Some(file) = raw_file.as_mut() {
-                        if let Err(err) = file.write_all(&bytes).await {
-                            warn!(?err, "failed to record raw HTTP response bytes");
-                            true
-                        } else {
-                            false
-                        }
+    stream! {
+        while let Some(bytes) = downstream_receiver.recv().await {
+            yield Ok(bytes);
+        }
+    }
+}
+
+async fn record_response_in_background(
+    upstream_response: reqwest::Response,
+    request_dir: Option<PathBuf>,
+    started_at: String,
+    recording_name: &'static str,
+    downstream_sender: mpsc::Sender<Bytes>,
+) {
+    let status = upstream_response.status().as_u16();
+    let mut stream = upstream_response.bytes_stream();
+    let mut raw_file =
+        open_optional_file(request_dir.as_ref().map(|dir| dir.join(recording_name))).await;
+    let mut response_body_bytes = 0usize;
+    let mut upstream_error = None;
+    let mut downstream_open = true;
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                response_body_bytes += bytes.len();
+                if downstream_open {
+                    downstream_open = downstream_sender.send(bytes.clone()).await.is_ok();
+                }
+                let recording_failed = if let Some(file) = raw_file.as_mut() {
+                    if let Err(err) = file.write_all(&bytes).await {
+                        warn!(?err, "failed to record raw HTTP response bytes");
+                        true
                     } else {
                         false
-                    };
-                    if recording_failed {
-                        raw_file = None;
                     }
-                }
-                Err(err) => {
-                    upstream_error = Some(err.to_string());
-                    break;
+                } else {
+                    false
+                };
+                if recording_failed {
+                    raw_file = None;
                 }
             }
+            Err(err) => {
+                upstream_error = Some(err.to_string());
+                break;
+            }
         }
+    }
 
-        if let Some(raw_file) = raw_file.as_mut() {
-            if let Err(err) = raw_file.flush().await {
-                warn!(?err, "failed to flush raw HTTP response recording file");
-            }
+    if let Some(raw_file) = raw_file.as_mut() {
+        if let Err(err) = raw_file.flush().await {
+            warn!(?err, "failed to flush raw HTTP response recording file");
         }
-        let response_meta = ResponseMeta {
-            status,
-            started_at,
-            completed_at: now_rfc3339(),
-            response_body_bytes,
-            sse_event_count: 0,
-            upstream_error,
-        };
-        if let Some(request_dir) = request_dir.as_ref() {
-            if let Err(err) = write_json_file(request_dir.join("response_meta.json"), &response_meta).await {
-                warn!(?err, "failed to record SSE response metadata");
-            }
+    }
+    let response_meta = ResponseMeta {
+        status,
+        started_at,
+        completed_at: now_rfc3339(),
+        response_body_bytes,
+        sse_event_count: 0,
+        upstream_error,
+    };
+    if let Some(request_dir) = request_dir.as_ref() {
+        if let Err(err) =
+            write_json_file(request_dir.join("response_meta.json"), &response_meta).await
+        {
+            warn!(?err, "failed to record HTTP response metadata");
         }
     }
 }
