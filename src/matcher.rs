@@ -16,12 +16,13 @@ use crate::{
 };
 
 pub async fn find_recorded_match(
-    output_dir: &Path,
+    recordings_dir: &Path,
+    mock_derived_dir: &Path,
     incoming: &RequestMatch,
 ) -> anyhow::Result<RecordedMatch> {
-    let mut sessions = fs::read_dir(output_dir)
+    let mut sessions = fs::read_dir(recordings_dir)
         .await
-        .with_context(|| format!("read recordings dir {}", output_dir.display()))?;
+        .with_context(|| format!("read recordings dir {}", recordings_dir.display()))?;
     while let Some(session_entry) = sessions.next_entry().await? {
         if !session_entry.file_type().await?.is_dir() {
             continue;
@@ -49,7 +50,12 @@ pub async fn find_recorded_match(
                 continue;
             };
             let request_dir = request_entry.path();
-            let Ok(recorded_match) = load_or_build_request_match(&request_dir).await else {
+            let derived_dir = mock_derived_dir
+                .join(&session_id)
+                .join("requests")
+                .join(format!("{index:06}"));
+            let Ok(recorded_match) = load_or_build_request_match(&request_dir, &derived_dir).await
+            else {
                 continue;
             };
             if recorded_match.hash == incoming.hash {
@@ -57,6 +63,7 @@ pub async fn find_recorded_match(
                     session_id,
                     index,
                     request_dir,
+                    derived_dir,
                 });
             }
         }
@@ -70,16 +77,21 @@ pub async fn find_recorded_match(
     ))
 }
 
-pub async fn load_or_build_request_match(request_dir: &Path) -> anyhow::Result<RequestMatch> {
-    match read_request_match(request_dir).await {
-        Ok(request_match) if request_match.version == MATCHER_VERSION => return Ok(request_match),
-        Ok(_) => {}
-        Err(err) => {
-            if !request_dir.join("request_match.json").exists() {
-            } else {
-                return Err(err);
+pub async fn load_or_build_request_match(
+    request_dir: &Path,
+    derived_dir: &Path,
+) -> anyhow::Result<RequestMatch> {
+    let match_path = derived_dir.join("request_match.json");
+    match fs::read(&match_path).await {
+        Ok(bytes) => {
+            let request_match: RequestMatch = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse {}", match_path.display()))?;
+            if request_match.version == MATCHER_VERSION {
+                return Ok(request_match);
             }
         }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err).with_context(|| format!("read {}", match_path.display())),
     }
 
     let meta_path = request_dir.join("request_meta.json");
@@ -100,16 +112,8 @@ pub async fn load_or_build_request_match(request_dir: &Path) -> anyhow::Result<R
         .with_context(|| format!("parse recorded method {}", meta.method))?;
     let path = meta.path.trim_start_matches('/');
     let request_match = build_request_match(&method, path, meta.query.as_deref(), &headers, &body)?;
-    write_json_file(request_dir.join("request_match.json"), &request_match).await?;
+    write_json_file(match_path, &request_match).await?;
     Ok(request_match)
-}
-
-async fn read_request_match(request_dir: &Path) -> anyhow::Result<RequestMatch> {
-    let path = request_dir.join("request_match.json");
-    let bytes = fs::read(&path)
-        .await
-        .with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
 async fn read_header_records(path: std::path::PathBuf) -> anyhow::Result<Vec<HeaderRecord>> {
@@ -140,7 +144,6 @@ fn header_value_for_replay(value: &HeaderValueRecord) -> Option<HeaderValue> {
             .decode(value)
             .ok()
             .and_then(|bytes| HeaderValue::from_bytes(&bytes).ok()),
-        HeaderValueRecord::RedactedSha256 { .. } => None,
     }
 }
 

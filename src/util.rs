@@ -17,7 +17,7 @@ use crate::{
         CODEX_TURN_METADATA_FIELDS, CODEX_TURN_METADATA_HEADER, FALLBACK_SESSION_HEADERS,
         HOP_BY_HOP_RESPONSE_HEADERS, UNKNOWN_SESSION,
     },
-    types::{AppState, ProxyMode, SessionSource},
+    types::{AppState, SessionSource},
 };
 
 pub fn build_upstream_url(upstream: &Url, path: &str, query: Option<&str>) -> anyhow::Result<Url> {
@@ -73,13 +73,11 @@ pub fn websocket_protocols(headers: &HeaderMap) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn should_forward_http_header(name: &HeaderName, proxy_mode: ProxyMode) -> bool {
-    let _ = proxy_mode;
+pub fn should_forward_http_header(name: &HeaderName) -> bool {
     name != HOST
 }
 
-pub fn should_forward_websocket_header(name: &HeaderName, proxy_mode: ProxyMode) -> bool {
-    let _ = proxy_mode;
+pub fn should_forward_websocket_header(name: &HeaderName) -> bool {
     !matches!(
         name,
         &HOST

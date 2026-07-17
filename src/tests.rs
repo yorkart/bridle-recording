@@ -8,6 +8,7 @@ use axum::{
     Router,
 };
 use bytes::Bytes;
+use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Url;
 use tokio::{fs, net::TcpListener, sync::Mutex};
@@ -18,12 +19,15 @@ use crate::{
     app::proxy,
     constants::{CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, UNKNOWN_SESSION},
     matcher::build_request_match,
-    proxy::{http::handle_proxy, replay::handle_mock_proxy},
-    recording::{headers_to_records, write_bytes_file, write_json_file},
+    proxy::{
+        http::handle_proxy,
+        replay::{build_replay_response, handle_mock_proxy},
+    },
+    recording::{headers_to_records, write_bytes_file, write_json_file, write_manifest},
     sse::SseParser,
     types::{
-        AppState, GatewayState, HeaderRecord, HeaderValueRecord, ProfileConfig, ProxyMode,
-        ResponseMeta, ResponseRewriteReplacement, ResponseRewriteSpec, SessionSource,
+        AppState, Args, GatewayState, HeaderRecord, HeaderValueRecord, ProfileConfig, RequestMeta,
+        ResponseMeta, SessionSource,
     },
     util::{
         build_upstream_url, expects_sse, next_existing_request_index, now_rfc3339, request_dir,
@@ -110,7 +114,14 @@ fn joins_upstream_base_path_and_request_path() {
 #[test]
 fn forwards_responses_lite_http_header_without_mutation() {
     let header = HeaderName::from_static("x-openai-internal-codex-responses-lite");
-    assert!(should_forward_http_header(&header, ProxyMode::Passthrough));
+    assert!(should_forward_http_header(&header));
+}
+
+#[test]
+fn removed_compatibility_options_are_not_accepted_by_cli() {
+    assert!(Args::try_parse_from(["bridle-recording", "--unsafe-record-secrets"]).is_err());
+    assert!(Args::try_parse_from(["bridle-recording", "--proxy-mode", "passthrough"]).is_err());
+    assert!(Args::try_parse_from(["bridle-recording", "--strip-responses-lite"]).is_err());
 }
 
 #[test]
@@ -312,58 +323,64 @@ fn whitelist_match_decodes_zstd_request_body() {
     assert_eq!(request_match.route.stream, Some(true));
 }
 
-#[test]
-fn response_rewrite_changes_only_whitelisted_json_pointers() {
-    let spec = ResponseRewriteSpec {
-        replacements: vec![ResponseRewriteReplacement {
-            pointer: "/response/id".to_owned(),
-            value: serde_json::json!("resp_live"),
-        }],
-    };
-    let bytes = br#"event: response.created
-data: {"type":"response.created","response":{"id":"resp_recorded","status":"in_progress"}}
+#[tokio::test]
+async fn replay_reads_response_rewrite_only_from_derived_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let request_dir = temp.path().join("recording/requests/000000");
+    let derived_dir = temp.path().join("derived/requests/000000");
+    fs::create_dir_all(&request_dir).await.unwrap();
+    fs::create_dir_all(&derived_dir).await.unwrap();
+    write_json_file(
+        request_dir.join("response_headers.json"),
+        &Vec::<HeaderRecord>::new(),
+    )
+    .await
+    .unwrap();
+    write_json_file(
+        request_dir.join("response_meta.json"),
+        &ResponseMeta {
+            status: 200,
+            started_at: now_rfc3339(),
+            completed_at: now_rfc3339(),
+            response_body_bytes: 35,
+            sse_event_count: 0,
+            upstream_error: None,
+        },
+    )
+    .await
+    .unwrap();
+    write_bytes_file(
+        request_dir.join("response_body.raw"),
+        br#"{"response":{"id":"resp_recorded"}}"#,
+    )
+    .await
+    .unwrap();
+    let rewrite = br#"{"replacements":[{"pointer":"/response/id","value":"resp_derived"}]}"#;
+    write_bytes_file(request_dir.join("response_rewrite.json"), rewrite)
+        .await
+        .unwrap();
 
-"#;
+    let original = build_replay_response(&request_dir, &derived_dir)
+        .await
+        .unwrap();
+    let original = axum::body::to_bytes(original.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(original, br#"{"response":{"id":"resp_recorded"}}"#[..]);
 
-    let rewritten = {
-        let text = std::str::from_utf8(bytes).unwrap();
-        let mut out = String::new();
-        for event in text.replace("\r\n", "\n").split_inclusive("\n\n") {
-            if event.trim().is_empty() {
-                out.push_str(event);
-                continue;
-            }
-            let has_trailing_boundary = event.ends_with("\n\n");
-            let body = event.strip_suffix("\n\n").unwrap_or(event);
-            let mut event_lines = Vec::new();
-            let mut data_lines = Vec::new();
-            for line in body.lines() {
-                if let Some(data) = line.strip_prefix("data: ") {
-                    data_lines.push(data.to_owned());
-                } else if let Some(data) = line.strip_prefix("data:") {
-                    data_lines.push(data.to_owned());
-                } else {
-                    event_lines.push(line.to_owned());
-                }
-            }
-            let mut value: serde_json::Value =
-                serde_json::from_str(&data_lines.join("\n")).unwrap();
-            let target = value.pointer_mut("/response/id").unwrap();
-            *target = serde_json::json!("resp_live");
-            event_lines.push(format!("data: {}", serde_json::to_string(&value).unwrap()));
-            out.push_str(&event_lines.join("\n"));
-            if has_trailing_boundary {
-                out.push_str("\n\n");
-            }
-        }
-        out.into_bytes()
-    };
-    let rewritten = String::from_utf8(rewritten).unwrap();
-
-    assert!(rewritten.contains(r#""id":"resp_live""#));
-    assert!(rewritten.contains(r#""status":"in_progress""#));
-    assert!(!rewritten.contains("resp_recorded"));
-    let _ = spec;
+    write_bytes_file(derived_dir.join("response_rewrite.json"), rewrite)
+        .await
+        .unwrap();
+    let rewritten = build_replay_response(&request_dir, &derived_dir)
+        .await
+        .unwrap();
+    let rewritten = axum::body::to_bytes(rewritten.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&rewritten).unwrap(),
+        serde_json::json!({"response": {"id": "resp_derived"}})
+    );
 }
 
 #[tokio::test]
@@ -406,6 +423,9 @@ async fn mock_replay_binds_session_and_requires_recorded_order() {
     .await;
 
     let state = test_state(output_dir.path());
+    let raw_request_dir = request_dir(output_dir.path(), "recorded-session", 0);
+    let derived_match_path =
+        request_dir(&state.mock_derived_dir, "recorded-session", 0).join("request_match.json");
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("thread-id"),
@@ -427,6 +447,8 @@ async fn mock_replay_binds_session_and_requires_recorded_order() {
     .await
     .unwrap();
     assert_eq!(first.status(), StatusCode::OK);
+    assert!(!raw_request_dir.join("request_match.json").exists());
+    assert!(derived_match_path.exists());
 
     let second = handle_mock_proxy(
         state.clone(),
@@ -469,11 +491,27 @@ fn parses_sse_events_across_chunks() {
 fn records_secret_headers_verbatim() {
     let mut headers = HeaderMap::new();
     headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
-    let records = headers_to_records(&headers, false);
+    let records = headers_to_records(&headers);
     assert!(matches!(
         &records[0].value,
         HeaderValueRecord::Text { value } if value == "Bearer secret"
     ));
+}
+
+#[tokio::test]
+async fn manifest_omits_removed_recording_options() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = test_state(temp.path());
+
+    write_manifest(&state, "manifest-session").await.unwrap();
+
+    let manifest = fs::read_to_string(temp.path().join("manifest-session/manifest.json"))
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    let recorder = manifest["recorder"].as_object().unwrap();
+    assert!(!recorder.contains_key("unsafe_record_secrets"));
+    assert!(!recorder.contains_key("proxy_mode"));
 }
 
 #[tokio::test]
@@ -733,9 +771,7 @@ async fn proxies_and_records_websocket_frames() {
                         match message {
                             axum::extract::ws::Message::Text(text) => {
                                 let _ = socket
-                                    .send(axum::extract::ws::Message::Text(
-                                        format!("echo:{text}").into(),
-                                    ))
+                                    .send(axum::extract::ws::Message::Text(format!("echo:{text}")))
                                     .await;
                             }
                             axum::extract::ws::Message::Close(close) => {
@@ -857,9 +893,8 @@ fn test_state(output_dir: &Path) -> AppState {
             home_dir: output_dir.to_path_buf(),
         },
         output_dir: output_dir.to_path_buf(),
+        mock_derived_dir: output_dir.join(".mock-derived"),
         session_header: HeaderName::from_static(DEFAULT_SESSION_HEADER),
-        unsafe_record_secrets: false,
-        proxy_mode: ProxyMode::Passthrough,
         counters: Arc::new(Mutex::new(HashMap::new())),
         replay_sessions: Arc::new(Mutex::new(HashMap::new())),
     }
@@ -894,8 +929,6 @@ fn gateway_test_state(output_root: &Path, upstream: Url) -> GatewayState {
             ),
         ])),
         session_header: HeaderName::from_static(DEFAULT_SESSION_HEADER),
-        unsafe_record_secrets: false,
-        proxy_mode: ProxyMode::Passthrough,
         counters: Arc::new(Mutex::new(HashMap::new())),
         replay_sessions: Arc::new(Mutex::new(HashMap::new())),
     }
@@ -948,15 +981,30 @@ async fn write_recorded_http_request(
 ) {
     let request_dir = request_dir(output_dir, session_id, index);
     fs::create_dir_all(&request_dir).await.unwrap();
-    let request_match = build_request_match(
-        &Method::POST,
-        "responses",
-        None,
-        &HeaderMap::new(),
-        &test_body(text),
+    let body = test_body(text);
+    write_json_file(
+        request_dir.join("request_meta.json"),
+        &RequestMeta {
+            index,
+            session_id: session_id.to_owned(),
+            session_source: SessionSource::Unknown,
+            started_at: now_rfc3339(),
+            method: Method::POST.to_string(),
+            path: "/responses".to_owned(),
+            query: None,
+            upstream_url: "https://example.test/responses".to_owned(),
+            request_body_bytes: body.len(),
+        },
     )
+    .await
     .unwrap();
-    write_json_file(request_dir.join("request_match.json"), &request_match)
+    write_json_file(
+        request_dir.join("request_headers.json"),
+        &Vec::<HeaderRecord>::new(),
+    )
+    .await
+    .unwrap();
+    write_bytes_file(request_dir.join("request_body.raw"), &body)
         .await
         .unwrap();
     write_json_file(

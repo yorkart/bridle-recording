@@ -37,8 +37,7 @@ pub async fn append_access_log_line(path: &Path, line: &str) -> anyhow::Result<(
     Ok(())
 }
 
-pub fn headers_to_records(headers: &HeaderMap, unsafe_record_secrets: bool) -> Vec<HeaderRecord> {
-    let _ = unsafe_record_secrets;
+pub fn headers_to_records(headers: &HeaderMap) -> Vec<HeaderRecord> {
     headers
         .iter()
         .map(|(name, value)| HeaderRecord {
@@ -173,6 +172,7 @@ pub async fn write_bytes_file(path: PathBuf, bytes: &[u8]) -> anyhow::Result<()>
         .with_context(|| format!("flush {}", path.display()))
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,8 +261,6 @@ pub async fn write_manifest(state: &AppState, session_id: &str) -> anyhow::Resul
             profile: state.profile.name.clone(),
             session_header: state.session_header.to_string(),
             upstream_base_url: state.profile.upstream.to_string(),
-            unsafe_record_secrets: state.unsafe_record_secrets,
-            proxy_mode: state.proxy_mode,
         },
     };
     write_json_file(path, &manifest).await

@@ -23,25 +23,6 @@ pub struct Args {
         default_value = DEFAULT_SESSION_HEADER
     )]
     pub session_header: String,
-
-    #[arg(long, env = "RECORDER_UNSAFE_RECORD_SECRETS", default_value_t = false)]
-    pub unsafe_record_secrets: bool,
-
-    #[arg(
-        long,
-        env = "RECORDER_PROXY_MODE",
-        value_enum,
-        default_value_t = ProxyMode::Passthrough
-    )]
-    pub proxy_mode: ProxyMode,
-
-    #[arg(
-        long,
-        env = "RECORDER_STRIP_RESPONSES_LITE",
-        default_value_t = false,
-        hide = true
-    )]
-    pub strip_responses_lite: bool,
 }
 
 #[derive(Clone)]
@@ -51,8 +32,6 @@ pub struct GatewayState {
     pub access_log_path: PathBuf,
     pub profiles: Arc<HashMap<String, ProfileConfig>>,
     pub session_header: HeaderName,
-    pub unsafe_record_secrets: bool,
-    pub proxy_mode: ProxyMode,
     pub counters: Arc<Mutex<HashMap<String, u64>>>,
     pub replay_sessions: Arc<Mutex<HashMap<String, ReplaySession>>>,
 }
@@ -62,17 +41,10 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub profile: ProfileConfig,
     pub output_dir: PathBuf,
+    pub mock_derived_dir: PathBuf,
     pub session_header: HeaderName,
-    pub unsafe_record_secrets: bool,
-    pub proxy_mode: ProxyMode,
     pub counters: Arc<Mutex<HashMap<String, u64>>>,
     pub replay_sessions: Arc<Mutex<HashMap<String, ReplaySession>>>,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, clap::ValueEnum, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProxyMode {
-    Passthrough,
 }
 
 #[derive(Clone)]
@@ -98,8 +70,6 @@ pub struct RecorderManifest {
     pub profile: String,
     pub session_header: String,
     pub upstream_base_url: String,
-    pub unsafe_record_secrets: bool,
-    pub proxy_mode: ProxyMode,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -153,6 +123,7 @@ pub struct RecordedMatch {
     pub session_id: String,
     pub index: u64,
     pub request_dir: PathBuf,
+    pub derived_dir: PathBuf,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -194,7 +165,6 @@ pub struct HeaderRecord {
 pub enum HeaderValueRecord {
     Text { value: String },
     BinaryBase64 { value: String },
-    RedactedSha256 { sha256: String },
 }
 
 #[derive(Serialize)]

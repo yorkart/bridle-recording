@@ -85,7 +85,7 @@ testset.json
 raw/<source_session_id>/
 ```
 
-`raw/` 下保存的是原始录制副本，不做脱敏、裁剪或转换。
+`raw/` 下保存的是录制内容副本；Header 会按测试集安全策略处理，body、SSE 和 WebSocket 数据按原始字节复制。源录制不会被修改，`request_match.json`、`response_rewrite.json` 等 mock 派生文件也不会混入副本。
 
 ## 唯一键和替换
 

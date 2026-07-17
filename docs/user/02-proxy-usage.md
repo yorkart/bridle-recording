@@ -20,7 +20,6 @@ http://127.0.0.1:8787
 
 ```sh
 BRIDLE_HOME_ROOT=~/.bridle-recording
-RECORDER_PROXY_MODE=passthrough
 HTTP_PROXY=http://127.0.0.1:7890
 HTTPS_PROXY=http://127.0.0.1:7890
 ALL_PROXY=socks5://127.0.0.1:7890
@@ -41,10 +40,8 @@ ALL_PROXY=socks5://127.0.0.1:7897 \
 
 ```sh
 BRIDLE_HOME_ROOT=~/.bridle-recording \
-RECORDER_PROXY_MODE=passthrough \
 cargo run -- \
-  --listen 127.0.0.1:8787 \
-  --proxy-mode passthrough
+  --listen 127.0.0.1:8787
 ```
 
 健康检查：

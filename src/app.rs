@@ -46,12 +46,6 @@ pub async fn run() -> anyhow::Result<()> {
     let profile_root = default_profile_root();
     let access_log_path = profile_root.join("access.log");
     let profiles = load_profiles(&profile_root).await?;
-    if args.strip_responses_lite {
-        anyhow::bail!(
-            "RECORDER_STRIP_RESPONSES_LITE/--strip-responses-lite is no longer supported: transparent proxy mode cannot modify forwarded traffic"
-        );
-    }
-    let proxy_mode = args.proxy_mode;
 
     fs::create_dir_all(&profile_root)
         .await
@@ -63,8 +57,6 @@ pub async fn run() -> anyhow::Result<()> {
         access_log_path,
         profiles: std::sync::Arc::new(profiles),
         session_header,
-        unsafe_record_secrets: args.unsafe_record_secrets,
-        proxy_mode,
         counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         replay_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(
             std::collections::HashMap::new(),
@@ -104,7 +96,6 @@ pub async fn run() -> anyhow::Result<()> {
         profiles = ?state.profiles.keys().collect::<Vec<_>>(),
         profile_root = %state.output_root.display(),
         session_header = %state.session_header,
-        proxy_mode = ?state.proxy_mode,
         http_proxy = ?std::env::var("HTTP_PROXY").ok(),
         https_proxy = ?std::env::var("HTTPS_PROXY").ok(),
         all_proxy = ?std::env::var("ALL_PROXY").ok(),
@@ -220,9 +211,8 @@ fn resolve_profile(state: &GatewayState, profile: &str) -> anyhow::Result<AppSta
         client: state.client.clone(),
         profile: profile_config.clone(),
         output_dir: profile_config.home_dir.join("recordings"),
+        mock_derived_dir: profile_config.home_dir.join("derived").join("mock"),
         session_header: state.session_header.clone(),
-        unsafe_record_secrets: state.unsafe_record_secrets,
-        proxy_mode: state.proxy_mode,
         counters: state.counters.clone(),
         replay_sessions: state.replay_sessions.clone(),
     })

@@ -86,7 +86,7 @@ pub async fn handle_proxy(
     record_json_in_background(
         recording.clone(),
         "response_headers.json",
-        headers_to_records(&response_headers, state.unsafe_record_secrets),
+        headers_to_records(&response_headers),
         "http_response_headers",
     );
 
@@ -126,7 +126,7 @@ async fn send_upstream(
     let method = reqwest_method(method)?;
     let mut upstream_request = state.client.request(method, upstream_url);
     for (name, value) in headers.iter() {
-        if !should_forward_http_header(name, state.proxy_mode) {
+        if !should_forward_http_header(name) {
             continue;
         }
         upstream_request = upstream_request.header(name.as_str(), value.as_bytes());
@@ -320,6 +320,7 @@ async fn update_request_body_bytes(
     write_json_file(meta_path, &request_meta).await
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,7 +790,7 @@ async fn create_http_recording(
     write_json_file(request_dir.join("request_meta.json"), &request_meta).await?;
     write_json_file(
         request_dir.join("request_headers.json"),
-        &headers_to_records(headers, state.unsafe_record_secrets),
+        &headers_to_records(headers),
     )
     .await?;
     write_manifest(state, session_id).await?;

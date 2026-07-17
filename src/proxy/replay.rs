@@ -16,7 +16,9 @@ use crate::{
         AppState, HeaderRecord, HeaderValueRecord, RecordedMatch, ReplaySession,
         ResponseRewriteSpec,
     },
-    util::{request_dir, session_from_headers, should_forward_response_header},
+    util::{
+        request_dir as recording_request_dir, session_from_headers, should_forward_response_header,
+    },
 };
 
 pub async fn handle_mock_proxy(
@@ -34,12 +36,17 @@ pub async fn handle_mock_proxy(
     let recorded = {
         let mut replay_sessions = state.replay_sessions.lock().await;
         if let Some(session) = replay_sessions.get_mut(&replay_key(&live_session_id)) {
-            let request_dir = request_dir(
+            let request_dir = recording_request_dir(
                 &state.output_dir,
                 &session.recorded_session_id,
                 session.next_index,
             );
-            let recorded_match = load_or_build_request_match(&request_dir)
+            let derived_dir = recording_request_dir(
+                &state.mock_derived_dir,
+                &session.recorded_session_id,
+                session.next_index,
+            );
+            let recorded_match = load_or_build_request_match(&request_dir, &derived_dir)
                 .await
                 .with_context(|| {
                     format!(
@@ -59,11 +66,14 @@ pub async fn handle_mock_proxy(
                 session_id: session.recorded_session_id.clone(),
                 index: session.next_index,
                 request_dir,
+                derived_dir,
             };
             session.next_index += 1;
             recorded
         } else {
-            let recorded = find_recorded_match(&state.output_dir, &incoming_match).await?;
+            let recorded =
+                find_recorded_match(&state.output_dir, &state.mock_derived_dir, &incoming_match)
+                    .await?;
             replay_sessions.insert(
                 replay_key(&live_session_id),
                 ReplaySession {
@@ -75,7 +85,7 @@ pub async fn handle_mock_proxy(
         }
     };
 
-    build_replay_response(&recorded.request_dir)
+    build_replay_response(&recorded.request_dir, &recorded.derived_dir)
         .await
         .with_context(|| {
             format!(
@@ -85,10 +95,13 @@ pub async fn handle_mock_proxy(
         })
 }
 
-pub async fn build_replay_response(request_dir: &Path) -> anyhow::Result<Response> {
+pub async fn build_replay_response(
+    request_dir: &Path,
+    derived_dir: &Path,
+) -> anyhow::Result<Response> {
     let status = read_response_status(request_dir).await?;
     let response_headers = read_header_records(request_dir.join("response_headers.json")).await?;
-    let rewrite_spec = read_response_rewrite_spec(request_dir).await?;
+    let rewrite_spec = read_response_rewrite_spec(derived_dir).await?;
     let mut response_builder = Response::builder().status(status);
     for header in response_headers {
         let Ok(name) = HeaderName::from_bytes(header.name.as_bytes()) else {
@@ -133,9 +146,9 @@ pub async fn build_replay_response(request_dir: &Path) -> anyhow::Result<Respons
 }
 
 async fn read_response_rewrite_spec(
-    request_dir: &Path,
+    derived_dir: &Path,
 ) -> anyhow::Result<Option<ResponseRewriteSpec>> {
-    let path = request_dir.join("response_rewrite.json");
+    let path = derived_dir.join("response_rewrite.json");
     match fs::read(&path).await {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
@@ -238,6 +251,5 @@ fn header_value_for_replay(value: &HeaderValueRecord) -> Option<HeaderValue> {
             .decode(value)
             .ok()
             .and_then(|bytes| HeaderValue::from_bytes(&bytes).ok()),
-        HeaderValueRecord::RedactedSha256 { .. } => None,
     }
 }

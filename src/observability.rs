@@ -612,7 +612,7 @@ async fn load_recording_incomplete(path: &Path) -> Option<String> {
 
 fn decode_request_body_json(bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
     match serde_json::from_slice(bytes) {
-        Ok(value) => return Ok(value),
+        Ok(value) => Ok(value),
         Err(json_err) => {
             let mut decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(bytes))
                 .context("create zstd request body decoder")?;
@@ -1130,6 +1130,7 @@ async fn copy_testset_dir_all(source: &Path, destination: &Path) -> anyhow::Resu
                 stack.push((source_path, destination_path));
             } else if file_type.is_file() {
                 match entry.file_name().to_str() {
+                    Some("request_match.json" | "response_rewrite.json") => {}
                     Some("request_headers.json") => {
                         copy_redacted_header_file(
                             &source_path,
@@ -1175,9 +1176,6 @@ fn redact_testset_header_records(records: &mut [HeaderRecord], allowlist: &[&str
         match &mut record.value {
             HeaderValueRecord::Text { value } | HeaderValueRecord::BinaryBase64 { value } => {
                 REDACTED_TESTSET_HEADER_VALUE.clone_into(value);
-            }
-            HeaderValueRecord::RedactedSha256 { sha256 } => {
-                REDACTED_TESTSET_HEADER_VALUE.clone_into(sha256);
             }
         }
     }
@@ -1397,6 +1395,8 @@ struct ParsedResponseSse {
     event_counts: BTreeMap<String, usize>,
 }
 
+const OBSERVABILITY_HTML: &str = include_str!("observability_ui.html");
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1420,7 +1420,6 @@ mod tests {
     fn assert_redacted_value(record: &HeaderRecord) {
         let value = match &record.value {
             HeaderValueRecord::Text { value } | HeaderValueRecord::BinaryBase64 { value } => value,
-            HeaderValueRecord::RedactedSha256 { sha256 } => sha256,
         };
         assert_eq!(value, REDACTED_TESTSET_HEADER_VALUE);
     }
@@ -1438,13 +1437,6 @@ mod tests {
                 value: "c2VjcmV0".to_owned(),
             },
         });
-        records.push(HeaderRecord {
-            name: "x-hashed-secret".to_owned(),
-            value: HeaderValueRecord::RedactedSha256 {
-                sha256: "secret-hash".to_owned(),
-            },
-        });
-
         redact_testset_header_records(&mut records, REQUEST_TESTSET_HEADER_ALLOWLIST);
 
         for (record, name) in records.iter().zip(REQUEST_TESTSET_HEADER_ALLOWLIST) {
@@ -1457,11 +1449,6 @@ mod tests {
             &records[11].value,
             HeaderValueRecord::BinaryBase64 { value }
                 if value == REDACTED_TESTSET_HEADER_VALUE
-        ));
-        assert!(matches!(
-            &records[12].value,
-            HeaderValueRecord::RedactedSha256 { sha256 }
-                if sha256 == REDACTED_TESTSET_HEADER_VALUE
         ));
     }
 
@@ -1507,6 +1494,15 @@ mod tests {
         fs::write(request_dir.join("request_body.raw"), body)
             .await
             .unwrap();
+        fs::write(request_dir.join("request_match.json"), b"derived matcher")
+            .await
+            .unwrap();
+        fs::write(
+            request_dir.join("response_rewrite.json"),
+            b"derived rewrite",
+        )
+        .await
+        .unwrap();
 
         copy_testset_dir_all(&source, &destination).await.unwrap();
 
@@ -1540,6 +1536,14 @@ mod tests {
                 .unwrap(),
             body
         );
+        assert!(!destination
+            .join("requests/000000/request_match.json")
+            .exists());
+        assert!(!destination
+            .join("requests/000000/response_rewrite.json")
+            .exists());
+        assert!(request_dir.join("request_match.json").exists());
+        assert!(request_dir.join("response_rewrite.json").exists());
     }
 
     #[test]
@@ -1664,5 +1668,3 @@ data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id"
         assert!(warning.contains("disk full"));
     }
 }
-
-const OBSERVABILITY_HTML: &str = include_str!("observability_ui.html");

@@ -17,7 +17,7 @@ testset.json
 raw/<source_session_id>/
 ```
 
-`testset.json` 是轻量索引，供页面、接口和集成测试读取。`raw/` 从原始录制派生：请求体、响应体、SSE、WebSocket 帧和其他文件按原始字节复制；`request_headers.json` 与 `response_headers.json` 保留既有结构和 Header key，但非白名单 Header 的 value 会替换为 `******`。源录制不受导出影响。
+`testset.json` 是轻量索引，供页面、接口和集成测试读取。`raw/` 从原始录制派生：请求体、响应体、SSE、WebSocket 帧和其他原始文件按原始字节复制；`request_headers.json` 与 `response_headers.json` 保留既有结构和 Header key，但非白名单 Header 的 value 会替换为 `******`。`request_match.json`、`response_rewrite.json` 等 mock 派生文件不会复制到 `raw/`，源录制也不受导出影响。
 
 ## 发现测试集
 

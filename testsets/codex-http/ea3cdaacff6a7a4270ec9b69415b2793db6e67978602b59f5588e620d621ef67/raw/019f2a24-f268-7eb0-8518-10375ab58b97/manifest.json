@@ -7,8 +7,6 @@
     "version": "0.1.0",
     "profile": "codex-http",
     "session_header": "x-codex-session-id",
-    "upstream_base_url": "https://chatgpt.com/backend-api/codex",
-    "unsafe_record_secrets": false,
-    "proxy_mode": "passthrough"
+    "upstream_base_url": "https://chatgpt.com/backend-api/codex"
   }
 }

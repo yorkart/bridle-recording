@@ -26,7 +26,7 @@ mkdir -p ~/.bridle-recording
 cp -R agent-home/codex-http ~/.bridle-recording/
 cp ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
 
-RECORDER_PROXY_MODE=passthrough ./scripts/run-recorder.sh
+./scripts/run-recorder.sh
 
 BRIDLE_AGENT_HOME=~/.bridle-recording/codex-http \
 CODEX_HOME=~/.bridle-recording/codex-http \

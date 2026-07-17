@@ -8,7 +8,6 @@ pub struct SseParser {
     buffer: BytesMut,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[allow(dead_code)]
 pub struct ParsedSseEventWithRaw {
     pub event: Option<String>,

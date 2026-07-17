@@ -18,7 +18,6 @@ This script uses:
 - `HTTP_PROXY=http://127.0.0.1:7890`
 - `HTTPS_PROXY=http://127.0.0.1:7890`
 - `ALL_PROXY=socks5://127.0.0.1:7890`
-- `RECORDER_PROXY_MODE=passthrough`
 
 You can still override those env vars before running the script if your local
 proxy uses a different port.
@@ -30,10 +29,8 @@ HTTP_PROXY=http://127.0.0.1:7890 \
 HTTPS_PROXY=http://127.0.0.1:7890 \
 ALL_PROXY=socks5://127.0.0.1:7890 \
 BRIDLE_HOME_ROOT=~/.bridle-recording \
-RECORDER_PROXY_MODE=passthrough \
 cargo run -- \
-  --listen 127.0.0.1:8787 \
-  --proxy-mode passthrough
+  --listen 127.0.0.1:8787
 ```
 
 This starts the recorder on `http://127.0.0.1:8787`.
@@ -50,6 +47,11 @@ profile's `bridle-profile.toml`.
 
 Recordings are written under the active profile home, for example
 `~/.bridle-recording/codex-http/recordings`.
+
+Mock-only indexes and optional response rewrite specifications are stored
+separately under `~/.bridle-recording/<profile>/derived/mock/`. Replay never
+writes `request_match.json`, `response_rewrite.json`, or other derived files
+into a recording session.
 
 ## Start Codex For Recording
 

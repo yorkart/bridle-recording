@@ -49,8 +49,6 @@ pub struct PreparedWebSocketProxy {
     pub started_at: String,
     pub upstream_url: Url,
     pub headers: HeaderMap,
-    pub unsafe_record_secrets: bool,
-    pub proxy_mode: crate::types::ProxyMode,
 }
 
 pub async fn prepare_websocket_proxy(
@@ -85,8 +83,6 @@ pub async fn prepare_websocket_proxy(
         started_at,
         upstream_url,
         headers,
-        unsafe_record_secrets: state.unsafe_record_secrets,
-        proxy_mode: state.proxy_mode,
     })
 }
 
@@ -106,7 +102,7 @@ async fn run_websocket_proxy_inner(
         .into_client_request()
         .with_context(|| format!("build websocket request {}", prepared.upstream_url))?;
     for (name, value) in prepared.headers.iter() {
-        if should_forward_websocket_header(name, prepared.proxy_mode) {
+        if should_forward_websocket_header(name) {
             upstream_request
                 .headers_mut()
                 .insert(name.clone(), value.clone());
@@ -137,7 +133,7 @@ async fn run_websocket_proxy_inner(
 
     record_websocket_headers_in_background(
         prepared.recording.clone(),
-        headers_to_records(upstream_response.headers(), prepared.unsafe_record_secrets),
+        headers_to_records(upstream_response.headers()),
     );
 
     let recorder = WebSocketRecorder::start(prepared.recording.clone());
@@ -640,7 +636,7 @@ async fn create_websocket_recording(
     write_json_file(request_dir.join("request_meta.json"), &request_meta).await?;
     write_json_file(
         request_dir.join("request_headers.json"),
-        &headers_to_records(headers, state.unsafe_record_secrets),
+        &headers_to_records(headers),
     )
     .await?;
     write_bytes_file(request_dir.join("request_body.raw"), b"").await?;
@@ -665,7 +661,7 @@ fn axum_to_tungstenite_message(message: AxumWsMessage) -> TungsteniteMessage {
 
 fn tungstenite_to_axum_message(message: TungsteniteMessage) -> AxumWsMessage {
     match message {
-        TungsteniteMessage::Text(text) => AxumWsMessage::Text(text.to_string().into()),
+        TungsteniteMessage::Text(text) => AxumWsMessage::Text(text.to_string()),
         TungsteniteMessage::Binary(bytes) => AxumWsMessage::Binary(bytes.to_vec()),
         TungsteniteMessage::Ping(bytes) => AxumWsMessage::Ping(bytes.to_vec()),
         TungsteniteMessage::Pong(bytes) => AxumWsMessage::Pong(bytes.to_vec()),
@@ -673,7 +669,7 @@ fn tungstenite_to_axum_message(message: TungsteniteMessage) -> AxumWsMessage {
             code: u16::from(close.code),
             reason: close.reason.to_string().into(),
         })),
-        TungsteniteMessage::Frame(frame) => AxumWsMessage::Binary(frame.payload().to_vec().into()),
+        TungsteniteMessage::Frame(frame) => AxumWsMessage::Binary(frame.payload().to_vec()),
     }
 }
 
@@ -714,7 +710,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         for index in 0..(RECORDING_QUEUE_CAPACITY * 2) {
-            let message = AxumWsMessage::Text(format!("verbatim-frame-{index}").into());
+            let message = AxumWsMessage::Text(format!("verbatim-frame-{index}"));
             recorder.record_axum(WebSocketDirection::ClientToUpstream, &message);
         }
         assert!(started.elapsed() < std::time::Duration::from_millis(250));
