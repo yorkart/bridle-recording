@@ -17,7 +17,7 @@ testset.json
 raw/<source_session_id>/
 ```
 
-`testset.json` 是轻量索引，供页面、接口和集成测试读取。`raw/` 从原始录制派生：请求体、响应体、SSE、WebSocket 帧和其他原始文件按原始字节复制；`request_headers.json` 与 `response_headers.json` 保留既有结构和 Header key，但非白名单 Header 的 value 会替换为 `******`。`request_match.json`、`response_rewrite.json` 等 mock 派生文件不会复制到 `raw/`，源录制也不受导出影响。
+`testset.json` 是轻量索引，供页面、接口和集成测试读取。`raw/` 从原始录制派生，只包含页面中确认保留的请求 / 响应对，并从 `000000` 开始连续编号。请求体、响应体、SSE 和 WebSocket 帧会按导出选项进行离线剪裁；`request_headers.json`、`response_headers.json` 和 `websocket_response_headers.json` 默认保留结构和 Header key，但非白名单 Header 的 value 会替换为 `******`。`request_match.json`、`response_rewrite.json` 等 mock 派生文件不会复制到 `raw/`，源录制也不受导出影响。
 
 ## 发现测试集
 
@@ -54,6 +54,12 @@ curl -s http://127.0.0.1:8787/api/testsets/codex-http | jq .
       "saved_at": "2026-07-04T01:44:27.522Z",
       "source_recording_path": "/Users/yorkart/.bridle-recording/codex-http/recordings/019f2a24-f268-7eb0-8518-10375ab58b97",
       "raw_recording_path": "raw/019f2a24-f268-7eb0-8518-10375ab58b97",
+      "export": {
+        "selected_requests": ["000000", "000002"],
+        "redact_sensitive_headers": true,
+        "sensitive_value_count": 2,
+        "remove": {"tools": false, "skills": true, "apps": true, "plugins": true, "derived_prompt": true}
+      },
       "testset_path": "/path/to/repo/testsets/codex-http/ea3cdaacff6a7a4270ec9b69415b2793db6e67978602b59f5588e620d621ef67"
     }
   ]
@@ -84,7 +90,11 @@ curl -s http://127.0.0.1:8787/api/testsets/codex-http | jq .
 
 `raw_recording_path`
 
-相对测试集目录的原始录制路径。
+相对测试集目录的派生录制路径。名称为兼容既有目录约定保留；内容是确认后的剪裁副本。
+
+`export`
+
+导出审计信息，包括源 request index、Header 处理策略、敏感值数量和移除选项。敏感原文本身不会写入 manifest。
 
 `testset_path`
 
@@ -180,4 +190,4 @@ for (const input of target.user_inputs) {
 4. 如果第一个用户输入相同，确认替换。
 5. 提交更新后的 `testsets/` 内容。
 
-当前阶段测试集保存原始数据，不做脱敏处理。提交前请确认仓库策略允许保存这些录制内容。
+提交前仍应检查预览和 diff，确认所选敏感内容策略覆盖了该测试集中的私密数据。

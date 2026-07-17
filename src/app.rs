@@ -84,6 +84,10 @@ pub async fn run() -> anyhow::Result<()> {
             "/api/profiles/:profile/sessions/:session_id/testset",
             post(crate::observability::save_testset),
         )
+        .route(
+            "/api/profiles/:profile/sessions/:session_id/testset/preview",
+            post(crate::observability::preview_testset),
+        )
         .route("/:profile/mock/*path", any(mock_proxy))
         .route("/:profile/*path", any(proxy))
         .with_state(state.clone());
