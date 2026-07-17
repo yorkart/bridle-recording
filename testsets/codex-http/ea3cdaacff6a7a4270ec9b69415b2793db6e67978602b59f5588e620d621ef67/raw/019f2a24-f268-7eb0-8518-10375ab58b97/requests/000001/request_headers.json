@@ -10,21 +10,21 @@
     "name": "x-codex-window-id",
     "value": {
       "kind": "text",
-      "value": "019f2a24-f268-7eb0-8518-10375ab58b97:0"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-turn-metadata",
     "value": {
       "kind": "text",
-      "value": "{\"installation_id\":\"44227658-0d0d-42b3-a369-63848314e797\",\"session_id\":\"019f2a24-f268-7eb0-8518-10375ab58b97\",\"thread_id\":\"019f2a24-f268-7eb0-8518-10375ab58b97\",\"turn_id\":\"019f2a25-5e64-7153-80fb-ea54316d695f\",\"window_id\":\"019f2a24-f268-7eb0-8518-10375ab58b97:0\",\"request_kind\":\"turn\",\"thread_source\":\"user\",\"sandbox\":\"seatbelt\",\"workspaces\":{\"/Users/yorkart/workspace/localhost/test-proj\":{\"has_changes\":false}},\"turn_started_at_unix_ms\":1783118519916}"
+      "value": "******"
     }
   },
   {
     "name": "x-client-request-id",
     "value": {
       "kind": "text",
-      "value": "019f2a24-f268-7eb0-8518-10375ab58b97"
+      "value": "******"
     }
   },
   {
@@ -66,14 +66,14 @@
     "name": "authorization",
     "value": {
       "kind": "text",
-      "value": "Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6ImFlNjc5NWRjLTRiYWUtNDE4YS04NjVkLTA4YTY0MzllZWRhNiIsInR5cCI6IkpXVCJ9.eyJhdWQiOlsiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS92MSJdLCJjbGllbnRfaWQiOiJhcHBfRU1vYW1FRVo3M2YwQ2tYYVhwN2hyYW5uIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfYWNjb3VudF9pZCI6ImU3ZjVhZDI1LWU1YzQtNDhlMC04MmRkLThkNWFhZTdjYzI4ZiIsImNoYXRncHRfYWNjb3VudF91c2VyX2lkIjoidXNlci16S2pPZUJkY3poWnY3NU54SW5IOHpZdVJfX2U3ZjVhZDI1LWU1YzQtNDhlMC04MmRkLThkNWFhZTdjYzI4ZiIsImNoYXRncHRfY29tcHV0ZV9yZXNpZGVuY3kiOiJub19jb25zdHJhaW50IiwiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLXpLak9lQmRjemhadjc1TnhJbkg4ell1UiIsImxvY2FsaG9zdCI6dHJ1ZSwidXNlcl9pZCI6InVzZXItektqT2VCZGN6aFp2NzVOeEluSDh6WXVSIn0sImh0dHBzOi8vYXBpLm9wZW5haS5jb20vcHJvZmlsZSI6eyJlbWFpbCI6Indhbmd5dWU5MjgwQGdtYWlsLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfSwiaXNzIjoiaHR0cHM6Ly9hdXRoLm9wZW5haS5jb20iLCJwd2RfYXV0aF90aW1lIjoxNzgxMzU3Nzg2OTk0LCJzY3AiOlsib3BlbmlkIiwicHJvZmlsZSIsImVtYWlsIiwib2ZmbGluZV9hY2Nlc3MiLCJhcGkuY29ubmVjdG9ycy5yZWFkIiwiYXBpLmNvbm5lY3RvcnMuaW52b2tlIl0sInNlc3Npb25faWQiOiJhdXRoc2Vzc184VURDclY2ZTlJMkFwS083UzlQWEZRM08iLCJzbCI6dHJ1ZSwic3ViIjoiZ29vZ2xlLW9hdXRoMnwxMTYzNjM3OTg0OTQ0NDEyNjQ4MTMiLCJpYXQiOjE3ODI1NjQyODMsImV4cCI6MTc4MzQyODI4MywianRpIjoiMGQ5ZTIyZjc0YTU5NDBkZThjMTdjMTk5ZjJhMWU0NzkiLCJuYmYiOjE3ODI1NjQyODN9.IGahZy_ajOzN3v86M3h1Y7LG3IiHsKHbK5w-V52FDMouNOP34e76xIyDs0RWTBMuSYBU8IsubfMqGI80BkCpMYCY9ntNbq4JOclRGWNoFESAqOl7FiQp9vzL79nCeDirkDGVY39QYKD-pO5XbG6qUbIJsF5KRyEWP0xOsi8E1HlczWEJBrT89g775l5ZGcm_XbEEHtNODK_ZhcnlCWZBdMDg8TTDxAxRmJYEc4aHcMYDcRa_hf4p4h8gu4-XsunWhnnBPfA-ctZ1GrU3K_rv3nf4KC9IverE88JpIXCZQROOn9RWICCCIz5QebvpTXwqJ-MCvHE3UQ8qJwS5HyL1jYwqED11kS8zbaZwg5EiKlpy-YqkJZ-l2-Thhzffc3Lj0bW8PGhFpsYDsfnrOOi_y4L1CtuQYWQeg1-_pyOVpv-J6jm3s-82lU6euNemSRWhAQ47WzOD3liS3nz2PvaVZFGOszD6KzNAs4jch6eFc4_4cdhtXl7pfLiJLCiA7OYeiUN3xpxZaGBK5lykm7BFS1542Q_71VDFEFOG01ksjZDy5DRTgIndGZe49vH9w7-8wfOLD8C7b8fkun3UytXLlFlx-wtEuVXsxs6kCS245HalIG7FLkTImbkegN8gFgyNYyEMJ0_qh2anMZCk-xf8xliaFQW2XO2xRyp58S28T8s"
+      "value": "******"
     }
   },
   {
     "name": "chatgpt-account-id",
     "value": {
       "kind": "text",
-      "value": "e7f5ad25-e5c4-48e0-82dd-8d5aae7cc28f"
+      "value": "******"
     }
   },
   {

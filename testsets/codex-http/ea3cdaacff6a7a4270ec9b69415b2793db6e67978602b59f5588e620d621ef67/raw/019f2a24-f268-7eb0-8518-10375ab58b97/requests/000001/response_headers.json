@@ -31,168 +31,168 @@
     "name": "x-codex-active-limit",
     "value": {
       "kind": "text",
-      "value": "premium"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-plan-type",
     "value": {
       "kind": "text",
-      "value": "prolite"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-primary-used-percent",
     "value": {
       "kind": "text",
-      "value": "1"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-secondary-used-percent",
     "value": {
       "kind": "text",
-      "value": "19"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-primary-window-minutes",
     "value": {
       "kind": "text",
-      "value": "300"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-primary-over-secondary-limit-percent",
     "value": {
       "kind": "text",
-      "value": "0"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-secondary-window-minutes",
     "value": {
       "kind": "text",
-      "value": "10080"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-primary-reset-after-seconds",
     "value": {
       "kind": "text",
-      "value": "17350"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-secondary-reset-after-seconds",
     "value": {
       "kind": "text",
-      "value": "468118"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-primary-reset-at",
     "value": {
       "kind": "text",
-      "value": "1783135874"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-secondary-reset-at",
     "value": {
       "kind": "text",
-      "value": "1783586642"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-credits-has-credits",
     "value": {
       "kind": "text",
-      "value": "False"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-credits-balance",
     "value": {
       "kind": "text",
-      "value": ""
+      "value": "******"
     }
   },
   {
     "name": "x-codex-credits-unlimited",
     "value": {
       "kind": "text",
-      "value": "False"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-primary-used-percent",
     "value": {
       "kind": "text",
-      "value": "0"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-secondary-used-percent",
     "value": {
       "kind": "text",
-      "value": "0"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-primary-window-minutes",
     "value": {
       "kind": "text",
-      "value": "300"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-primary-over-secondary-limit-percent",
     "value": {
       "kind": "text",
-      "value": "0"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-secondary-window-minutes",
     "value": {
       "kind": "text",
-      "value": "10080"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-primary-reset-after-seconds",
     "value": {
       "kind": "text",
-      "value": "18000"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-secondary-reset-after-seconds",
     "value": {
       "kind": "text",
-      "value": "604800"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-primary-reset-at",
     "value": {
       "kind": "text",
-      "value": "1783136525"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-secondary-reset-at",
     "value": {
       "kind": "text",
-      "value": "1783723325"
+      "value": "******"
     }
   },
   {
     "name": "x-codex-bengalfox-limit-name",
     "value": {
       "kind": "text",
-      "value": "GPT-5.3-Codex-Spark"
+      "value": "******"
     }
   },
   {
@@ -206,7 +206,7 @@
     "name": "x-oai-request-id",
     "value": {
       "kind": "text",
-      "value": "d3092567-d262-4f4a-86bf-cc927ef7df6d"
+      "value": "******"
     }
   },
   {
@@ -248,7 +248,7 @@
     "name": "set-cookie",
     "value": {
       "kind": "text",
-      "value": "__cf_bm=ABxDcd9sEB9HyHvPxjV.HLLsGXmdy_ItTaw.7mYatIY-1783118525.2116845-1.0.1.1-rCnsSS3dyMBf4CZU3YMhoYOOna5_dTCJ86OD5Nn5pEnmodvG6W8KbspkwjKXbWAflEipo9eQM1y3Yi0DjvqGZeV2OZihAoHr3fCyxwJ_qgHq3keF7egUvn1xN3JdRD_b; HttpOnly; SameSite=None; Secure; Path=/; Domain=chatgpt.com; Expires=Fri, 03 Jul 2026 23:12:05 GMT"
+      "value": "******"
     }
   },
   {
@@ -276,7 +276,7 @@
     "name": "cf-ray",
     "value": {
       "kind": "text",
-      "value": "a15966be9be9c713-NRT"
+      "value": "******"
     }
   }
 ]

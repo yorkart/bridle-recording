@@ -22,8 +22,37 @@ use tokio::{
 use crate::{
     constants::UNKNOWN_SESSION,
     sse::SseParser,
-    types::{GatewayState, RequestMeta, ResponseMeta},
+    types::{GatewayState, HeaderRecord, HeaderValueRecord, RequestMeta, ResponseMeta},
 };
+
+const REDACTED_TESTSET_HEADER_VALUE: &str = "******";
+const REQUEST_TESTSET_HEADER_ALLOWLIST: &[&str] = &[
+    "accept",
+    "content-encoding",
+    "content-length",
+    "content-type",
+    "host",
+    "originator",
+    "session-id",
+    "thread-id",
+    "user-agent",
+    "x-codex-beta-features",
+];
+const RESPONSE_TESTSET_HEADER_ALLOWLIST: &[&str] = &[
+    "cf-cache-status",
+    "connection",
+    "cross-origin-opener-policy",
+    "date",
+    "nel",
+    "referrer-policy",
+    "report-to",
+    "server",
+    "strict-transport-security",
+    "transfer-encoding",
+    "x-content-type-options",
+    "x-models-etag",
+    "x-openai-proxy-wasm",
+];
 
 pub async fn ui() -> Response {
     (
@@ -152,7 +181,7 @@ async fn save_testset_inner(
         fs::remove_dir_all(&temp_dir).await?;
     }
     fs::create_dir_all(&temp_dir).await?;
-    copy_dir_all(&source_dir, &temp_dir.join("raw").join(session_id)).await?;
+    copy_testset_dir_all(&source_dir, &temp_dir.join("raw").join(session_id)).await?;
 
     let manifest = TestsetManifest {
         version: 1,
@@ -1031,7 +1060,7 @@ async fn write_json_pretty<T>(path: PathBuf, value: &T) -> anyhow::Result<()>
 where
     T: Serialize,
 {
-    let mut bytes = serde_json::to_vec_pretty(value).context("serialize testset manifest")?;
+    let mut bytes = serde_json::to_vec_pretty(value).context("serialize testset JSON")?;
     bytes.push(b'\n');
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -1047,7 +1076,7 @@ where
         .with_context(|| format!("flush {}", path.display()))
 }
 
-async fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
+async fn copy_testset_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(destination)
         .await
         .with_context(|| format!("create {}", destination.display()))?;
@@ -1066,11 +1095,58 @@ async fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
                     .with_context(|| format!("create {}", destination_path.display()))?;
                 stack.push((source_path, destination_path));
             } else if file_type.is_file() {
-                copy_file_verbatim(&source_path, &destination_path).await?;
+                match entry.file_name().to_str() {
+                    Some("request_headers.json") => {
+                        copy_redacted_header_file(
+                            &source_path,
+                            &destination_path,
+                            REQUEST_TESTSET_HEADER_ALLOWLIST,
+                        )
+                        .await?;
+                    }
+                    Some("response_headers.json") => {
+                        copy_redacted_header_file(
+                            &source_path,
+                            &destination_path,
+                            RESPONSE_TESTSET_HEADER_ALLOWLIST,
+                        )
+                        .await?;
+                    }
+                    _ => copy_file_verbatim(&source_path, &destination_path).await?,
+                }
             }
         }
     }
     Ok(())
+}
+
+async fn copy_redacted_header_file(
+    source: &Path,
+    destination: &Path,
+    allowlist: &[&str],
+) -> anyhow::Result<()> {
+    let mut records = read_json::<Vec<HeaderRecord>>(source).await?;
+    redact_testset_header_records(&mut records, allowlist);
+    write_json_pretty(destination.to_path_buf(), &records).await
+}
+
+fn redact_testset_header_records(records: &mut [HeaderRecord], allowlist: &[&str]) {
+    for record in records {
+        if allowlist
+            .iter()
+            .any(|allowed| record.name.eq_ignore_ascii_case(allowed))
+        {
+            continue;
+        }
+        match &mut record.value {
+            HeaderValueRecord::Text { value } | HeaderValueRecord::BinaryBase64 { value } => {
+                REDACTED_TESTSET_HEADER_VALUE.clone_into(value);
+            }
+            HeaderValueRecord::RedactedSha256 { sha256 } => {
+                REDACTED_TESTSET_HEADER_VALUE.clone_into(sha256);
+            }
+        }
+    }
 }
 
 async fn copy_file_verbatim(source: &Path, destination: &Path) -> anyhow::Result<()> {
@@ -1290,6 +1366,147 @@ struct ParsedResponseSse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_header(name: &str, value: &str) -> HeaderRecord {
+        HeaderRecord {
+            name: name.to_owned(),
+            value: HeaderValueRecord::Text {
+                value: value.to_owned(),
+            },
+        }
+    }
+
+    fn assert_text_value(record: &HeaderRecord, expected: &str) {
+        assert!(matches!(
+            &record.value,
+            HeaderValueRecord::Text { value } if value == expected
+        ));
+    }
+
+    fn assert_redacted_value(record: &HeaderRecord) {
+        let value = match &record.value {
+            HeaderValueRecord::Text { value } | HeaderValueRecord::BinaryBase64 { value } => value,
+            HeaderValueRecord::RedactedSha256 { sha256 } => sha256,
+        };
+        assert_eq!(value, REDACTED_TESTSET_HEADER_VALUE);
+    }
+
+    #[test]
+    fn redacts_unknown_request_headers_and_preserves_allowlisted_values() {
+        let mut records = REQUEST_TESTSET_HEADER_ALLOWLIST
+            .iter()
+            .map(|name| text_header(name, &format!("original-{name}")))
+            .collect::<Vec<_>>();
+        records.push(text_header("Authorization", "Bearer secret"));
+        records.push(HeaderRecord {
+            name: "x-binary-secret".to_owned(),
+            value: HeaderValueRecord::BinaryBase64 {
+                value: "c2VjcmV0".to_owned(),
+            },
+        });
+        records.push(HeaderRecord {
+            name: "x-hashed-secret".to_owned(),
+            value: HeaderValueRecord::RedactedSha256 {
+                sha256: "secret-hash".to_owned(),
+            },
+        });
+
+        redact_testset_header_records(&mut records, REQUEST_TESTSET_HEADER_ALLOWLIST);
+
+        for (record, name) in records.iter().zip(REQUEST_TESTSET_HEADER_ALLOWLIST) {
+            assert_eq!(record.name, *name);
+            assert_text_value(record, &format!("original-{name}"));
+        }
+        assert_eq!(records[10].name, "Authorization");
+        assert_redacted_value(&records[10]);
+        assert!(matches!(
+            &records[11].value,
+            HeaderValueRecord::BinaryBase64 { value }
+                if value == REDACTED_TESTSET_HEADER_VALUE
+        ));
+        assert!(matches!(
+            &records[12].value,
+            HeaderValueRecord::RedactedSha256 { sha256 }
+                if sha256 == REDACTED_TESTSET_HEADER_VALUE
+        ));
+    }
+
+    #[test]
+    fn redacts_unknown_response_headers_and_preserves_allowlisted_values() {
+        let mut records = RESPONSE_TESTSET_HEADER_ALLOWLIST
+            .iter()
+            .map(|name| text_header(name, &format!("original-{name}")))
+            .collect::<Vec<_>>();
+        records.push(text_header("set-cookie", "session=secret"));
+
+        redact_testset_header_records(&mut records, RESPONSE_TESTSET_HEADER_ALLOWLIST);
+
+        for (record, name) in records.iter().zip(RESPONSE_TESTSET_HEADER_ALLOWLIST) {
+            assert_eq!(record.name, *name);
+            assert_text_value(record, &format!("original-{name}"));
+        }
+        assert_redacted_value(&records[13]);
+    }
+
+    #[tokio::test]
+    async fn testset_copy_redacts_headers_without_changing_source_or_other_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("recording");
+        let destination = temp.path().join("testset");
+        let request_dir = source.join("requests/000000");
+        fs::create_dir_all(&request_dir).await.unwrap();
+        let request_headers = vec![
+            text_header("SESSION-ID", "session-original"),
+            text_header("authorization", "Bearer secret"),
+        ];
+        let response_headers = vec![
+            text_header("x-models-etag", "etag-original"),
+            text_header("set-cookie", "session=secret"),
+        ];
+        write_json_pretty(request_dir.join("request_headers.json"), &request_headers)
+            .await
+            .unwrap();
+        write_json_pretty(request_dir.join("response_headers.json"), &response_headers)
+            .await
+            .unwrap();
+        let body = b"body copied byte for byte\n";
+        fs::write(request_dir.join("request_body.raw"), body)
+            .await
+            .unwrap();
+
+        copy_testset_dir_all(&source, &destination).await.unwrap();
+
+        let source_request =
+            read_json::<Vec<HeaderRecord>>(&request_dir.join("request_headers.json"))
+                .await
+                .unwrap();
+        assert_text_value(&source_request[0], "session-original");
+        assert_text_value(&source_request[1], "Bearer secret");
+
+        let copied_request = read_json::<Vec<HeaderRecord>>(
+            &destination.join("requests/000000/request_headers.json"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(copied_request[0].name, "SESSION-ID");
+        assert_text_value(&copied_request[0], "session-original");
+        assert_eq!(copied_request[1].name, "authorization");
+        assert_redacted_value(&copied_request[1]);
+
+        let copied_response = read_json::<Vec<HeaderRecord>>(
+            &destination.join("requests/000000/response_headers.json"),
+        )
+        .await
+        .unwrap();
+        assert_text_value(&copied_response[0], "etag-original");
+        assert_redacted_value(&copied_response[1]);
+        assert_eq!(
+            fs::read(destination.join("requests/000000/request_body.raw"))
+                .await
+                .unwrap(),
+            body
+        );
+    }
 
     #[test]
     fn parses_custom_tool_call_from_sse() {
