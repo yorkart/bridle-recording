@@ -247,9 +247,12 @@ pub async fn proxy(
         uri,
         profile,
     );
-    if let Err(err) = append_access_log_line(&state.access_log_path, &access_line).await {
-        warn!(?err, path = %state.access_log_path.display(), "failed to append access log");
-    }
+    let access_log_path = state.access_log_path.clone();
+    tokio::spawn(async move {
+        if let Err(err) = append_access_log_line(&access_log_path, &access_line).await {
+            warn!(?err, path = %access_log_path.display(), "failed to append access log");
+        }
+    });
 
     let state = match resolve_profile(&state, &profile) {
         Ok(state) => state,

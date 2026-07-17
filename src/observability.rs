@@ -392,8 +392,17 @@ async fn load_observed_calls(session_dir: &Path) -> anyhow::Result<Vec<ObservedC
 async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Result<ObservedCall> {
     let request_meta = read_json::<RequestMeta>(&request_dir.join("request_meta.json")).await?;
     let response_meta_path = request_dir.join("response_meta.json");
-    let (response_meta, recording_state, recording_warning) =
+    let (response_meta, mut recording_state, mut recording_warning) =
         load_response_meta(&response_meta_path).await;
+    if let Some(incomplete_warning) =
+        load_recording_incomplete(&request_dir.join("recording_incomplete.json")).await
+    {
+        recording_state = "incomplete".to_owned();
+        recording_warning = Some(match recording_warning {
+            Some(existing) => format!("{existing}; {incomplete_warning}"),
+            None => incomplete_warning,
+        });
+    }
     let request_body_bytes = fs::read(request_dir.join("request_body.raw"))
         .await
         .with_context(|| format!("read request body in {}", request_dir.display()))?;
@@ -574,6 +583,31 @@ async fn load_response_meta(path: &Path) -> (Option<ResponseMeta>, String, Optio
             )),
         ),
     }
+}
+
+async fn load_recording_incomplete(path: &Path) -> Option<String> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            return Some(format!(
+                "incomplete recording marker could not be read: {err}"
+            ))
+        }
+    };
+    let marker = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(marker) => marker,
+        Err(err) => return Some(format!("incomplete recording marker is invalid: {err}")),
+    };
+    let stage = marker
+        .get("stage")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let error = marker
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("recording write failed");
+    Some(format!("recording failed during {stage}: {error}"))
 }
 
 fn decode_request_body_json(bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
@@ -1612,6 +1646,22 @@ data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id"
         assert!(meta.is_none());
         assert_eq!(state, "incomplete");
         assert!(warning.unwrap().contains("invalid"));
+    }
+
+    #[tokio::test]
+    async fn recording_failure_marker_exposes_incomplete_stage() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("recording_incomplete.json");
+        std::fs::write(
+            &path,
+            br#"{"incomplete":true,"stage":"http_response_body_write","error":"disk full"}"#,
+        )
+        .unwrap();
+
+        let warning = load_recording_incomplete(&path).await.unwrap();
+
+        assert!(warning.contains("http_response_body_write"));
+        assert!(warning.contains("disk full"));
     }
 }
 

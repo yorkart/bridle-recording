@@ -271,3 +271,36 @@ pub async fn write_manifest(state: &AppState, session_id: &str) -> anyhow::Resul
 pub async fn write_websocket_meta(request_dir: &Path, meta: WebSocketMeta) -> anyhow::Result<()> {
     write_json_file(request_dir.join("websocket_meta.json"), &meta).await
 }
+
+pub async fn recording_failure(
+    request_dir: Option<&Path>,
+    stage: &str,
+    error: &(dyn std::fmt::Display + Sync),
+) {
+    tracing::warn!(
+        recording_stage = stage,
+        error = %error,
+        request_dir = ?request_dir.map(|path| path.display().to_string()),
+        "recording failed; proxy forwarding is unaffected and the recording is incomplete"
+    );
+
+    let Some(request_dir) = request_dir else {
+        return;
+    };
+    let marker = serde_json::json!({
+        "incomplete": true,
+        "stage": stage,
+        "error": error.to_string(),
+        "updated_at": now_rfc3339(),
+    });
+    if let Err(marker_error) =
+        write_json_file(request_dir.join("recording_incomplete.json"), &marker).await
+    {
+        tracing::warn!(
+            recording_stage = stage,
+            error = %marker_error,
+            request_dir = %request_dir.display(),
+            "failed to persist incomplete recording marker"
+        );
+    }
+}

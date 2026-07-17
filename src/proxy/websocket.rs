@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use anyhow::{anyhow, Context};
 use axum::{
@@ -12,7 +15,7 @@ use tokio::{
     fs::{self, File},
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::Mutex,
+    sync::mpsc,
 };
 use tokio_socks::tcp::Socks5Stream;
 use tokio_tungstenite::{
@@ -28,7 +31,8 @@ use tokio_tungstenite::{
 
 use crate::{
     recording::{
-        headers_to_records, write_bytes_file, write_json_file, write_manifest, write_websocket_meta,
+        headers_to_records, recording_failure, write_bytes_file, write_json_file, write_manifest,
+        write_websocket_meta, RecordingContext, RECORDING_QUEUE_CAPACITY,
     },
     types::{
         AppState, RequestMeta, WebSocketCloseRecord, WebSocketDirection, WebSocketFrameRecord,
@@ -41,7 +45,7 @@ use crate::{
 };
 
 pub struct PreparedWebSocketProxy {
-    pub request_dir: Option<PathBuf>,
+    pub recording: RecordingContext,
     pub started_at: String,
     pub upstream_url: Url,
     pub headers: HeaderMap,
@@ -58,14 +62,11 @@ pub async fn prepare_websocket_proxy(
 ) -> anyhow::Result<PreparedWebSocketProxy> {
     let started_at = now_rfc3339();
     let (session_id, session_source) = session_from_headers(&headers, &state.session_header);
-    let index = next_request_index(&state, &session_id).await?;
     let upstream_url = build_upstream_websocket_url(&state.profile.upstream, &path, uri.query())?;
-    let request_dir = request_dir(&state.output_dir, &session_id, index);
-    let request_dir = match create_websocket_recording(
-        &request_dir,
-        &state,
+    let recording = start_websocket_recording(
+        state.clone(),
         RequestMeta {
-            index,
+            index: 0,
             session_id: session_id.clone(),
             session_source,
             started_at: started_at.clone(),
@@ -75,23 +76,12 @@ pub async fn prepare_websocket_proxy(
             upstream_url: upstream_url.to_string(),
             request_body_bytes: 0,
         },
-        &session_id,
-        &headers,
-    )
-    .await
-    {
-        Ok(request_dir) => request_dir,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "websocket recording setup failed; continuing without recording"
-            );
-            None
-        }
-    };
+        session_id,
+        headers.clone(),
+    );
 
     Ok(PreparedWebSocketProxy {
-        request_dir,
+        recording,
         started_at,
         upstream_url,
         headers,
@@ -129,8 +119,8 @@ async fn run_websocket_proxy_inner(
         match client_async_tls_with_config(upstream_request, upstream_socket, None, None).await {
             Ok(result) => result,
             Err(err) => {
-                maybe_write_websocket_meta(
-                    prepared.request_dir.as_deref(),
+                record_websocket_meta_in_background(
+                    prepared.recording,
                     WebSocketMeta {
                         status: "connect_failed",
                         started_at: prepared.started_at,
@@ -140,33 +130,17 @@ async fn run_websocket_proxy_inner(
                         upstream_to_client_frames: 0,
                         error: Some(err.to_string()),
                     },
-                )
-                .await;
+                );
                 return Err(anyhow!("connect upstream websocket failed: {err}"));
             }
         };
 
-    if let Some(request_dir) = prepared.request_dir.as_ref() {
-        if let Err(err) = write_json_file(
-            request_dir.join("websocket_response_headers.json"),
-            &headers_to_records(upstream_response.headers(), prepared.unsafe_record_secrets),
-        )
-        .await
-        {
-            tracing::warn!(?err, "failed to record websocket response headers");
-        }
-    }
+    record_websocket_headers_in_background(
+        prepared.recording.clone(),
+        headers_to_records(upstream_response.headers(), prepared.unsafe_record_secrets),
+    );
 
-    let recorder = match prepared.request_dir.as_ref() {
-        Some(request_dir) => match File::create(request_dir.join("websocket_frames.jsonl")).await {
-            Ok(file) => Some(WebSocketRecorder::new(file)),
-            Err(err) => {
-                tracing::warn!(?err, "failed to create websocket recording file");
-                None
-            }
-        },
-        None => None,
-    };
+    let recorder = WebSocketRecorder::start(prepared.recording.clone());
 
     let (mut client_sender, mut client_receiver) = client.split();
     let (mut upstream_sender, mut upstream_receiver) = upstream.split();
@@ -175,11 +149,7 @@ async fn run_websocket_proxy_inner(
         while let Some(message) = client_receiver.next().await {
             let message = message.context("read client websocket frame")?;
             let is_close = matches!(message, AxumWsMessage::Close(_));
-            if let Some(recorder) = recorder.as_ref() {
-                recorder
-                    .record_axum(WebSocketDirection::ClientToUpstream, &message)
-                    .await;
-            }
+            recorder.record_axum(WebSocketDirection::ClientToUpstream, &message);
             upstream_sender
                 .send(axum_to_tungstenite_message(message))
                 .await
@@ -195,11 +165,7 @@ async fn run_websocket_proxy_inner(
         while let Some(message) = upstream_receiver.next().await {
             let message = message.context("read upstream websocket frame")?;
             let is_close = matches!(message, TungsteniteMessage::Close(_));
-            if let Some(recorder) = recorder.as_ref() {
-                recorder
-                    .record_tungstenite(WebSocketDirection::UpstreamToClient, &message)
-                    .await;
-            }
+            recorder.record_tungstenite(WebSocketDirection::UpstreamToClient, &message);
             client_sender
                 .send(tungstenite_to_axum_message(message))
                 .await
@@ -216,12 +182,10 @@ async fn run_websocket_proxy_inner(
         result = upstream_to_client => result.err().map(|err| err.to_string()),
     };
 
-    let counts = match recorder.as_ref() {
-        Some(recorder) => recorder.counts().await,
-        None => WebSocketRecorderCounts::default(),
-    };
-    maybe_write_websocket_meta(
-        prepared.request_dir.as_deref(),
+    let counts = recorder.counts();
+    drop(recorder);
+    record_websocket_meta_in_background(
+        prepared.recording,
         WebSocketMeta {
             status: if transfer_error.is_some() {
                 "transfer_error"
@@ -235,8 +199,7 @@ async fn run_websocket_proxy_inner(
             upstream_to_client_frames: counts.upstream_to_client,
             error: transfer_error,
         },
-    )
-    .await;
+    );
 
     Ok(())
 }
@@ -407,10 +370,13 @@ async fn connect_via_proxy(
     }
 }
 
-#[derive(Clone)]
 struct WebSocketRecorder {
-    file: Arc<Mutex<File>>,
-    state: Arc<Mutex<WebSocketRecorderState>>,
+    sender: mpsc::Sender<WebSocketFrameRecord>,
+    recording: RecordingContext,
+    next_index: AtomicUsize,
+    client_to_upstream: AtomicUsize,
+    upstream_to_client: AtomicUsize,
+    recording_disabled: AtomicBool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -419,22 +385,25 @@ struct WebSocketRecorderCounts {
     upstream_to_client: usize,
 }
 
-#[derive(Default)]
-struct WebSocketRecorderState {
-    next_index: usize,
-    counts: WebSocketRecorderCounts,
-}
-
 impl WebSocketRecorder {
-    fn new(file: File) -> Self {
+    fn start(recording: RecordingContext) -> Self {
+        let (sender, receiver) = mpsc::channel(RECORDING_QUEUE_CAPACITY);
+        tokio::spawn(record_websocket_frames_in_background(
+            recording.clone(),
+            receiver,
+        ));
         Self {
-            file: Arc::new(Mutex::new(file)),
-            state: Arc::new(Mutex::new(WebSocketRecorderState::default())),
+            sender,
+            recording,
+            next_index: AtomicUsize::new(0),
+            client_to_upstream: AtomicUsize::new(0),
+            upstream_to_client: AtomicUsize::new(0),
+            recording_disabled: AtomicBool::new(false),
         }
     }
 
-    async fn record_axum(&self, direction: WebSocketDirection, message: &AxumWsMessage) {
-        let record = self.next_record(direction, axum_ws_opcode(message)).await;
+    fn record_axum(&self, direction: WebSocketDirection, message: &AxumWsMessage) {
+        let record = self.next_record(direction, axum_ws_opcode(message));
         let record = match message {
             AxumWsMessage::Text(text) => WebSocketFrameRecord {
                 text: Some(text.to_string()),
@@ -462,19 +431,11 @@ impl WebSocketRecorder {
                 ..record
             },
         };
-        if let Err(err) = self.append_record(&record).await {
-            tracing::warn!(?err, "failed to append websocket client frame record");
-        }
+        self.enqueue(record);
     }
 
-    async fn record_tungstenite(
-        &self,
-        direction: WebSocketDirection,
-        message: &TungsteniteMessage,
-    ) {
-        let record = self
-            .next_record(direction, tungstenite_ws_opcode(message))
-            .await;
+    fn record_tungstenite(&self, direction: WebSocketDirection, message: &TungsteniteMessage) {
+        let record = self.next_record(direction, tungstenite_ws_opcode(message));
         let record = match message {
             TungsteniteMessage::Text(text) => WebSocketFrameRecord {
                 text: Some(text.to_string()),
@@ -506,22 +467,22 @@ impl WebSocketRecorder {
                 ..record
             },
         };
-        if let Err(err) = self.append_record(&record).await {
-            tracing::warn!(?err, "failed to append websocket upstream frame record");
-        }
+        self.enqueue(record);
     }
 
-    async fn next_record(
+    fn next_record(
         &self,
         direction: WebSocketDirection,
         opcode: &'static str,
     ) -> WebSocketFrameRecord {
-        let mut state = self.state.lock().await;
-        let index = state.next_index;
-        state.next_index += 1;
+        let index = self.next_index.fetch_add(1, Ordering::Relaxed);
         match direction {
-            WebSocketDirection::ClientToUpstream => state.counts.client_to_upstream += 1,
-            WebSocketDirection::UpstreamToClient => state.counts.upstream_to_client += 1,
+            WebSocketDirection::ClientToUpstream => {
+                self.client_to_upstream.fetch_add(1, Ordering::Relaxed);
+            }
+            WebSocketDirection::UpstreamToClient => {
+                self.upstream_to_client.fetch_add(1, Ordering::Relaxed);
+            }
         }
         WebSocketFrameRecord {
             index,
@@ -534,19 +495,136 @@ impl WebSocketRecorder {
         }
     }
 
-    async fn append_record(&self, record: &WebSocketFrameRecord) -> anyhow::Result<()> {
-        let mut line = serde_json::to_vec(record).context("serialize websocket frame record")?;
-        line.push(b'\n');
-        let mut file = self.file.lock().await;
-        file.write_all(&line)
-            .await
-            .context("write websocket frame record")?;
-        file.flush().await.context("flush websocket frame record")
+    fn enqueue(&self, record: WebSocketFrameRecord) {
+        if self.recording_disabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let error = match self.sender.try_send(record) {
+            Ok(()) => return,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                "WebSocket recording queue filled while storage was slow"
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                "WebSocket recording worker stopped before frame transfer completed"
+            }
+        };
+        if !self.recording_disabled.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                error,
+                "WebSocket forwarding continues without further frame recording"
+            );
+            let recording = self.recording.clone();
+            let error = error.to_owned();
+            tokio::spawn(async move {
+                let Some(request_dir) = recording.request_dir().await else {
+                    return;
+                };
+                recording_failure(Some(&request_dir), "websocket_frame_queue", &error).await;
+            });
+        }
     }
 
-    async fn counts(&self) -> WebSocketRecorderCounts {
-        self.state.lock().await.counts
+    fn counts(&self) -> WebSocketRecorderCounts {
+        WebSocketRecorderCounts {
+            client_to_upstream: self.client_to_upstream.load(Ordering::Relaxed),
+            upstream_to_client: self.upstream_to_client.load(Ordering::Relaxed),
+        }
     }
+}
+
+async fn record_websocket_frames_in_background(
+    recording: RecordingContext,
+    mut records: mpsc::Receiver<WebSocketFrameRecord>,
+) {
+    let Some(request_dir) = recording.request_dir().await else {
+        return;
+    };
+    let path = request_dir.join("websocket_frames.jsonl");
+    let mut file = match File::create(&path).await {
+        Ok(file) => file,
+        Err(err) => {
+            recording_failure(Some(&request_dir), "websocket_frames_create", &err).await;
+            return;
+        }
+    };
+
+    while let Some(record) = records.recv().await {
+        let mut line = match serde_json::to_vec(&record) {
+            Ok(line) => line,
+            Err(err) => {
+                recording_failure(Some(&request_dir), "websocket_frame_serialize", &err).await;
+                continue;
+            }
+        };
+        line.push(b'\n');
+        recording.before_stream_write().await;
+        if let Err(err) = file.write_all(&line).await {
+            recording_failure(Some(&request_dir), "websocket_frame_write", &err).await;
+            return;
+        }
+        if let Err(err) = file.flush().await {
+            recording_failure(Some(&request_dir), "websocket_frame_flush", &err).await;
+            return;
+        }
+    }
+}
+
+fn start_websocket_recording(
+    state: AppState,
+    mut request_meta: RequestMeta,
+    session_id: String,
+    headers: HeaderMap,
+) -> RecordingContext {
+    RecordingContext::spawn(async move {
+        let index = match next_request_index(&state, &session_id).await {
+            Ok(index) => index,
+            Err(err) => {
+                recording_failure(None, "websocket_request_index", &err).await;
+                return None;
+            }
+        };
+        request_meta.index = index;
+        let request_dir = request_dir(&state.output_dir, &session_id, index);
+        match create_websocket_recording(&request_dir, &state, request_meta, &session_id, &headers)
+            .await
+        {
+            Ok(request_dir) => request_dir,
+            Err(err) => {
+                recording_failure(Some(&request_dir), "websocket_request_setup", &err).await;
+                None
+            }
+        }
+    })
+}
+
+fn record_websocket_headers_in_background(
+    recording: RecordingContext,
+    headers: Vec<crate::types::HeaderRecord>,
+) {
+    tokio::spawn(async move {
+        let Some(request_dir) = recording.request_dir().await else {
+            return;
+        };
+        if let Err(err) = write_json_file(
+            request_dir.join("websocket_response_headers.json"),
+            &headers,
+        )
+        .await
+        {
+            recording_failure(Some(&request_dir), "websocket_response_headers", &err).await;
+        }
+    });
+}
+
+fn record_websocket_meta_in_background(recording: RecordingContext, meta: WebSocketMeta) {
+    tokio::spawn(async move {
+        let Some(request_dir) = recording.request_dir().await else {
+            return;
+        };
+        if let Err(err) = write_websocket_meta(&request_dir, meta).await {
+            recording_failure(Some(&request_dir), "websocket_metadata", &err).await;
+        }
+    });
 }
 
 async fn create_websocket_recording(
@@ -568,15 +646,6 @@ async fn create_websocket_recording(
     write_bytes_file(request_dir.join("request_body.raw"), b"").await?;
     write_manifest(state, session_id).await?;
     Ok(Some(request_dir.clone()))
-}
-
-async fn maybe_write_websocket_meta(request_dir: Option<&std::path::Path>, meta: WebSocketMeta) {
-    let Some(request_dir) = request_dir else {
-        return;
-    };
-    if let Err(err) = write_websocket_meta(request_dir, meta).await {
-        tracing::warn!(?err, "failed to write websocket metadata");
-    }
 }
 
 fn axum_to_tungstenite_message(message: AxumWsMessage) -> TungsteniteMessage {
@@ -626,5 +695,41 @@ fn tungstenite_ws_opcode(message: &TungsteniteMessage) -> &'static str {
         TungsteniteMessage::Pong(_) => "pong",
         TungsteniteMessage::Close(_) => "close",
         TungsteniteMessage::Frame(_) => "frame",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn slow_websocket_recording_does_not_block_frame_handoff() {
+        let temp = tempfile::tempdir().unwrap();
+        let recording = RecordingContext::spawn({
+            let request_dir = temp.path().to_path_buf();
+            async move { Some(request_dir) }
+        })
+        .with_stream_write_delay(std::time::Duration::from_millis(500));
+        let recorder = WebSocketRecorder::start(recording);
+
+        let started = std::time::Instant::now();
+        for index in 0..(RECORDING_QUEUE_CAPACITY * 2) {
+            let message = AxumWsMessage::Text(format!("verbatim-frame-{index}").into());
+            recorder.record_axum(WebSocketDirection::ClientToUpstream, &message);
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(250));
+        drop(recorder);
+
+        let marker_path = temp.path().join("recording_incomplete.json");
+        for _ in 0..100 {
+            if marker_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(marker_path).unwrap()).unwrap();
+        assert_eq!(marker["incomplete"], true);
+        assert_eq!(marker["stage"], "websocket_frame_queue");
     }
 }

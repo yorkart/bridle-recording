@@ -18,7 +18,7 @@ use crate::{
     app::proxy,
     constants::{CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, UNKNOWN_SESSION},
     matcher::build_request_match,
-    proxy::replay::handle_mock_proxy,
+    proxy::{http::handle_proxy, replay::handle_mock_proxy},
     recording::{headers_to_records, write_bytes_file, write_json_file},
     sse::SseParser,
     types::{
@@ -493,6 +493,58 @@ fn records_secret_headers_verbatim() {
         &records[0].value,
         HeaderValueRecord::Text { value } if value == "Bearer secret"
     ));
+}
+
+#[tokio::test]
+async fn http_forwarding_succeeds_when_recording_path_is_unusable() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/*path",
+            any(|headers: HeaderMap, body: Bytes| async move {
+                assert_eq!(headers["x-verbatim-request"], "preserved");
+                (
+                    StatusCode::CREATED,
+                    [("x-verbatim-response", "preserved")],
+                    body,
+                )
+            }),
+        );
+        axum::serve(upstream_listener, app).await.unwrap();
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let unusable_output = temp.path().join("recordings-is-a-file");
+    std::fs::write(&unusable_output, b"not a directory").unwrap();
+    let mut state = test_state(&unusable_output);
+    state.profile.upstream = Url::parse(&format!("http://{upstream_addr}")).unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-verbatim-request", HeaderValue::from_static("preserved"));
+    let request_body = Bytes::from_static(b"verbatim-request-body");
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        handle_proxy(
+            state,
+            Method::POST,
+            Uri::from_static("/echo?case=recording-failure"),
+            headers,
+            "echo".to_owned(),
+            request_body.clone(),
+        ),
+    )
+    .await
+    .expect("recording failure must not delay the upstream request")
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(response.headers()["x-verbatim-response"], "preserved");
+    let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(response_body, request_body);
+    assert!(unusable_output.is_file());
 }
 
 #[tokio::test]
