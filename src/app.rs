@@ -1,5 +1,6 @@
 use anyhow::Context;
 use axum::{
+    body::Body,
     extract::{ws::WebSocketUpgrade, Path as AxumPath, State},
     http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
@@ -234,7 +235,7 @@ pub async fn proxy(
     uri: Uri,
     headers: HeaderMap,
     AxumPath((profile, path)): AxumPath<(String, String)>,
-    body: Bytes,
+    body: Body,
 ) -> Response {
     let user_agent = headers
         .get(axum::http::header::USER_AGENT)

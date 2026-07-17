@@ -33,25 +33,6 @@ use crate::{
 };
 
 #[test]
-fn retries_on_expected_upstream_statuses() {
-    assert!(super::proxy::http::should_retry_status(
-        reqwest::StatusCode::BAD_GATEWAY
-    ));
-    assert!(super::proxy::http::should_retry_status(
-        reqwest::StatusCode::SERVICE_UNAVAILABLE
-    ));
-    assert!(super::proxy::http::should_retry_status(
-        reqwest::StatusCode::GATEWAY_TIMEOUT
-    ));
-    assert!(super::proxy::http::should_retry_status(
-        reqwest::StatusCode::TOO_MANY_REQUESTS
-    ));
-    assert!(!super::proxy::http::should_retry_status(
-        reqwest::StatusCode::UNAUTHORIZED
-    ));
-}
-
-#[test]
 fn sanitizes_session_id_for_directory_names() {
     assert_eq!(sanitize_session_id(" abc/def:ghi "), "abc_def_ghi");
     assert_eq!(sanitize_session_id("session-1_2.3"), "session-1_2.3");
@@ -531,7 +512,7 @@ async fn http_forwarding_succeeds_when_recording_path_is_unusable() {
             Uri::from_static("/echo?case=recording-failure"),
             headers,
             "echo".to_owned(),
-            request_body.clone(),
+            Body::from(request_body.clone()),
         ),
     )
     .await
@@ -545,6 +526,198 @@ async fn http_forwarding_succeeds_when_recording_path_is_unusable() {
         .unwrap();
     assert_eq!(response_body, request_body);
     assert!(unusable_output.is_file());
+}
+
+#[tokio::test]
+async fn records_an_empty_request_body_as_complete() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new().route("/*path", any(|| async { StatusCode::NO_CONTENT }));
+        axum::serve(upstream_listener, app).await.unwrap();
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = test_state(temp.path());
+    state.profile.upstream = Url::parse(&format!("http://{upstream_addr}")).unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        DEFAULT_SESSION_HEADER,
+        HeaderValue::from_static("empty-request"),
+    );
+
+    let response = handle_proxy(
+        state,
+        Method::POST,
+        Uri::from_static("/empty"),
+        headers,
+        "empty".to_owned(),
+        Body::empty(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let request_dir = temp.path().join("empty-request/requests/000000");
+    wait_for_recorded_request(&request_dir, 0).await;
+    assert_eq!(
+        fs::read(request_dir.join("request_body.raw"))
+            .await
+            .unwrap(),
+        b""
+    );
+    assert!(!request_dir.join("recording_incomplete.json").exists());
+}
+
+#[tokio::test]
+async fn proxies_and_records_request_larger_than_two_mebibytes() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (received_sender, mut received_receiver) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/*path",
+            any(move |body: Body| {
+                let received_sender = received_sender.clone();
+                async move {
+                    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                    received_sender.send(bytes).unwrap();
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        axum::serve(upstream_listener, app).await.unwrap();
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = gateway_test_state(
+        temp.path(),
+        Url::parse(&format!("http://{upstream_addr}")).unwrap(),
+    );
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/:profile/*path", any(proxy))
+            .with_state(state);
+        axum::serve(proxy_listener, app).await.unwrap();
+    });
+
+    let request_body = Bytes::from(
+        (0..(2 * 1024 * 1024 + 17_321))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let response = reqwest::Client::new()
+        .post(format!("http://{proxy_addr}/codex-http/upload"))
+        .header(DEFAULT_SESSION_HEADER, "large-request")
+        .body(request_body.clone())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(received_receiver.recv().await.unwrap(), request_body);
+
+    let request_dir = temp
+        .path()
+        .join("codex-http/recordings/large-request/requests/000000");
+    wait_for_recorded_request(&request_dir, request_body.len()).await;
+    assert_eq!(
+        fs::read(request_dir.join("request_body.raw"))
+            .await
+            .unwrap(),
+        request_body
+    );
+}
+
+#[tokio::test]
+async fn forwards_and_records_request_chunks_as_they_arrive() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let (first_chunk_sender, first_chunk_receiver) = tokio::sync::oneshot::channel();
+    let first_chunk_sender = Arc::new(Mutex::new(Some(first_chunk_sender)));
+    let (received_sender, mut received_receiver) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let app = Router::new().route(
+            "/*path",
+            any(move |body: Body| {
+                let first_chunk_sender = first_chunk_sender.clone();
+                let received_sender = received_sender.clone();
+                async move {
+                    let mut body = body.into_data_stream();
+                    let mut received = Vec::new();
+                    if let Some(chunk) = body.next().await {
+                        received.extend_from_slice(&chunk.unwrap());
+                        if let Some(sender) = first_chunk_sender.lock().await.take() {
+                            let _ = sender.send(());
+                        }
+                    }
+                    while let Some(chunk) = body.next().await {
+                        received.extend_from_slice(&chunk.unwrap());
+                    }
+                    received_sender.send(Bytes::from(received)).unwrap();
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        axum::serve(upstream_listener, app).await.unwrap();
+    });
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = gateway_test_state(
+        temp.path(),
+        Url::parse(&format!("http://{upstream_addr}")).unwrap(),
+    );
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = Router::new()
+            .route("/:profile/*path", any(proxy))
+            .with_state(state);
+        axum::serve(proxy_listener, app).await.unwrap();
+    });
+
+    let first = Bytes::from_static(b"first-streamed-chunk-");
+    let second = Bytes::from_static(b"second-streamed-chunk");
+    let expected = [first.as_ref(), second.as_ref()].concat();
+    let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+    let request_stream = async_stream::stream! {
+        yield Ok::<Bytes, std::io::Error>(first);
+        let _ = release_receiver.await;
+        yield Ok::<Bytes, std::io::Error>(second);
+    };
+    let request = tokio::spawn(async move {
+        reqwest::Client::new()
+            .post(format!("http://{proxy_addr}/codex-http/stream"))
+            .header(DEFAULT_SESSION_HEADER, "streamed-request")
+            .body(reqwest::Body::wrap_stream(request_stream))
+            .send()
+            .await
+            .unwrap()
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), first_chunk_receiver)
+        .await
+        .expect("the first chunk must reach upstream before the request body completes")
+        .unwrap();
+    assert!(!request.is_finished());
+    release_sender.send(()).unwrap();
+
+    let response = request.await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(received_receiver.recv().await.unwrap(), expected);
+
+    let request_dir = temp
+        .path()
+        .join("codex-http/recordings/streamed-request/requests/000000");
+    wait_for_recorded_request(&request_dir, expected.len()).await;
+    assert_eq!(
+        fs::read(request_dir.join("request_body.raw"))
+            .await
+            .unwrap(),
+        expected
+    );
 }
 
 #[tokio::test]
@@ -741,6 +914,29 @@ fn test_body(text: &str) -> Bytes {
         })
         .to_string(),
     )
+}
+
+async fn wait_for_recorded_request(request_dir: &Path, expected_bytes: usize) {
+    let meta_path = request_dir.join("request_meta.json");
+    for _ in 0..300 {
+        if let Ok(raw) = fs::read(&meta_path).await {
+            if let Ok(meta) = serde_json::from_slice::<crate::types::RequestMeta>(&raw) {
+                if meta.request_body_bytes == expected_bytes
+                    && fs::metadata(request_dir.join("request_body.raw"))
+                        .await
+                        .map(|metadata| metadata.len() == expected_bytes as u64)
+                        .unwrap_or(false)
+                {
+                    return;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!(
+        "request recording did not finalize with {expected_bytes} bytes at {}",
+        request_dir.display()
+    );
 }
 
 async fn write_recorded_http_request(

@@ -1,4 +1,9 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    pin::Pin,
+    sync::Mutex as StdMutex,
+    task::{Context as TaskContext, Poll},
+};
 
 use anyhow::{anyhow, Context};
 use async_stream::stream;
@@ -9,6 +14,7 @@ use axum::{
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
+use http_body::{Body as HttpBody, Frame, SizeHint};
 use tokio::{
     fs::{self, File},
     io::AsyncWriteExt,
@@ -17,10 +23,9 @@ use tokio::{
 use tracing::warn;
 
 use crate::{
-    constants::UPSTREAM_MAX_ATTEMPTS,
     recording::{
-        headers_to_records, recording_failure, write_bytes_file, write_error_response_meta,
-        write_json_file, write_manifest, RecordingContext, RECORDING_QUEUE_CAPACITY,
+        headers_to_records, recording_failure, write_error_response_meta, write_json_file,
+        write_manifest, RecordingContext, RECORDING_QUEUE_CAPACITY,
     },
     types::{AppState, RequestMeta, ResponseMeta},
     util::{
@@ -36,7 +41,7 @@ pub async fn handle_proxy(
     uri: Uri,
     headers: HeaderMap,
     path: String,
-    body: Bytes,
+    body: Body,
 ) -> anyhow::Result<Response> {
     let started_at = now_rfc3339();
     let (session_id, session_source) = session_from_headers(&headers, &state.session_header);
@@ -53,32 +58,28 @@ pub async fn handle_proxy(
         "received http proxy request"
     );
     let upstream_url = build_upstream_url(&state.profile.upstream, &path, uri.query())?;
-    let recording = start_http_recording(
-        state.clone(),
-        RequestMeta {
-            index: 0,
-            session_id: session_id.clone(),
-            session_source,
-            started_at: started_at.clone(),
-            method: method.to_string(),
-            path: format!("/{path}"),
-            query: uri.query().map(ToOwned::to_owned),
-            upstream_url: upstream_url.to_string(),
-            request_body_bytes: body.len(),
-        },
-        headers.clone(),
-        body.clone(),
-        session_id,
-    );
+    let request_meta = RequestMeta {
+        index: 0,
+        session_id: session_id.clone(),
+        session_source,
+        started_at: started_at.clone(),
+        method: method.to_string(),
+        path: format!("/{path}"),
+        query: uri.query().map(ToOwned::to_owned),
+        upstream_url: upstream_url.to_string(),
+        request_body_bytes: 0,
+    };
+    let recording = start_http_recording(state.clone(), request_meta, headers.clone(), session_id);
+    let body = record_streaming_request(body, recording.clone());
 
-    let upstream_response =
-        match send_upstream_with_retry(&state, &method, &headers, &body, upstream_url).await {
-            Ok(response) => response,
-            Err(err) => {
-                record_error_response_in_background(recording, started_at.clone(), err.to_string());
-                return Err(anyhow!("upstream request failed: {err}"));
-            }
-        };
+    let upstream_response = match send_upstream(&state, &method, &headers, body, upstream_url).await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            record_error_response_in_background(recording, started_at.clone(), err.to_string());
+            return Err(anyhow!("upstream request failed: {err}"));
+        }
+    };
 
     let status = upstream_response.status();
     let response_headers = upstream_response.headers().clone();
@@ -115,101 +116,208 @@ pub async fn handle_proxy(
         .context("build streaming response")
 }
 
-async fn send_upstream_with_retry(
+async fn send_upstream(
     state: &AppState,
     method: &Method,
     headers: &HeaderMap,
-    body: &Bytes,
+    body: reqwest::Body,
     upstream_url: reqwest::Url,
 ) -> anyhow::Result<reqwest::Response> {
     let method = reqwest_method(method)?;
-    let mut last_error: Option<anyhow::Error> = None;
-
-    for attempt in 1..=UPSTREAM_MAX_ATTEMPTS {
-        let mut upstream_request = state.client.request(method.clone(), upstream_url.clone());
-        for (name, value) in headers.iter() {
-            if !should_forward_http_header(name, state.proxy_mode) {
-                continue;
-            }
-            upstream_request = upstream_request.header(name.as_str(), value.as_bytes());
+    let mut upstream_request = state.client.request(method, upstream_url);
+    for (name, value) in headers.iter() {
+        if !should_forward_http_header(name, state.proxy_mode) {
+            continue;
         }
-        let upstream_request = upstream_request.body(body.clone());
+        upstream_request = upstream_request.header(name.as_str(), value.as_bytes());
+    }
 
-        match upstream_request.send().await {
-            Ok(response) => {
-                if should_retry_status(response.status()) && attempt < UPSTREAM_MAX_ATTEMPTS {
-                    warn!(
-                        attempt,
-                        max_attempts = UPSTREAM_MAX_ATTEMPTS,
-                        status = %response.status(),
-                        profile = %state.profile.name,
-                        "retrying upstream request after retryable status"
-                    );
-                    tokio::time::sleep(retry_delay(attempt)).await;
-                    continue;
+    upstream_request.body(body).send().await.map_err(Into::into)
+}
+
+fn record_streaming_request(body: Body, recording: RecordingContext) -> reqwest::Body {
+    let (recording_sender, recording_receiver) = mpsc::unbounded_channel();
+    let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(record_request_in_background(
+        recording,
+        recording_receiver,
+        completion_receiver,
+    ));
+
+    let initially_complete = body.is_end_stream();
+    let mut body = RequestRecordingBody {
+        inner: StdMutex::new(Box::pin(body)),
+        recording_sender: Some(recording_sender),
+        completion_sender: Some(completion_sender),
+        request_body_bytes: 0,
+        queue_error: None,
+    };
+    if initially_complete {
+        body.finish(None);
+    }
+    reqwest::Body::wrap(body)
+}
+
+struct RequestRecordingBody {
+    inner: StdMutex<Pin<Box<Body>>>,
+    recording_sender: Option<mpsc::UnboundedSender<Bytes>>,
+    completion_sender: Option<tokio::sync::oneshot::Sender<RequestRecordingCompletion>>,
+    request_body_bytes: usize,
+    queue_error: Option<String>,
+}
+
+impl RequestRecordingBody {
+    fn finish(&mut self, body_error: Option<String>) {
+        let Some(completion_sender) = self.completion_sender.take() else {
+            return;
+        };
+        self.recording_sender.take();
+        let _ = completion_sender.send(RequestRecordingCompletion {
+            request_body_bytes: self.request_body_bytes,
+            body_error,
+            queue_error: self.queue_error.take(),
+        });
+    }
+}
+
+impl Drop for RequestRecordingBody {
+    fn drop(&mut self) {
+        self.finish(Some(
+            "upstream stopped consuming the request body before it completed".to_owned(),
+        ));
+    }
+}
+
+impl HttpBody for RequestRecordingBody {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        let result = this
+            .inner
+            .get_mut()
+            .expect("request body mutex poisoned")
+            .as_mut()
+            .poll_frame(cx);
+
+        match result {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(bytes) = frame.data_ref() {
+                    this.request_body_bytes += bytes.len();
+                    if let Some(sender) = this.recording_sender.as_ref() {
+                        if sender.send(bytes.clone()).is_err() {
+                            this.queue_error = Some(
+                                "HTTP request recording worker stopped before request completion"
+                                    .to_owned(),
+                            );
+                            this.recording_sender = None;
+                        }
+                    }
                 }
-                return Ok(response);
+                Poll::Ready(Some(Ok(frame)))
             }
-            Err(err) => {
-                if should_retry_error(&err) && attempt < UPSTREAM_MAX_ATTEMPTS {
-                    warn!(
-                        attempt,
-                        max_attempts = UPSTREAM_MAX_ATTEMPTS,
-                        error = %err,
-                        error_debug = ?err,
-                        is_timeout = err.is_timeout(),
-                        is_connect = err.is_connect(),
-                        is_request = err.is_request(),
-                        is_status = err.is_status(),
-                        url = ?err.url(),
-                        profile = %state.profile.name,
-                        "retrying upstream request after transport error"
-                    );
-                    last_error = Some(anyhow!(err));
-                    tokio::time::sleep(retry_delay(attempt)).await;
-                    continue;
-                }
-                warn!(
-                    attempt,
-                    max_attempts = UPSTREAM_MAX_ATTEMPTS,
-                    error = %err,
-                    error_debug = ?err,
-                    is_timeout = err.is_timeout(),
-                    is_connect = err.is_connect(),
-                    is_request = err.is_request(),
-                    is_status = err.is_status(),
-                    url = ?err.url(),
-                    profile = %state.profile.name,
-                    "upstream request failed after transport error"
-                );
-                return Err(anyhow!(err));
+            Poll::Ready(Some(Err(err))) => {
+                this.finish(Some(err.to_string()));
+                Poll::Ready(Some(Err(err)))
             }
+            Poll::Ready(None) => {
+                this.finish(None);
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("upstream request retries exhausted")))
-}
-
-pub(crate) fn should_retry_status(status: reqwest::StatusCode) -> bool {
-    matches!(
-        status,
-        reqwest::StatusCode::BAD_GATEWAY
-            | reqwest::StatusCode::SERVICE_UNAVAILABLE
-            | reqwest::StatusCode::GATEWAY_TIMEOUT
-            | reqwest::StatusCode::TOO_MANY_REQUESTS
-    )
-}
-
-pub(crate) fn should_retry_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_request()
-}
-
-pub(crate) fn retry_delay(attempt: usize) -> std::time::Duration {
-    match attempt {
-        1 => std::time::Duration::from_millis(200),
-        2 => std::time::Duration::from_millis(500),
-        _ => std::time::Duration::from_secs(1),
+    fn is_end_stream(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("request body mutex poisoned")
+            .as_ref()
+            .is_end_stream()
     }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner
+            .lock()
+            .expect("request body mutex poisoned")
+            .as_ref()
+            .size_hint()
+    }
+}
+
+struct RequestRecordingCompletion {
+    request_body_bytes: usize,
+    body_error: Option<String>,
+    queue_error: Option<String>,
+}
+
+async fn record_request_in_background(
+    recording: RecordingContext,
+    mut chunks: mpsc::UnboundedReceiver<Bytes>,
+    completion: tokio::sync::oneshot::Receiver<RequestRecordingCompletion>,
+) {
+    let Some(request_dir) = recording.request_dir().await else {
+        return;
+    };
+    let raw_path = request_dir.join("request_body.raw");
+    let mut raw_file = match File::create(&raw_path).await {
+        Ok(file) => Some(file),
+        Err(err) => {
+            recording_failure(Some(&request_dir), "http_request_body_create", &err).await;
+            None
+        }
+    };
+    while let Some(bytes) = chunks.recv().await {
+        let Some(file) = raw_file.as_mut() else {
+            continue;
+        };
+        recording.before_stream_write().await;
+        if let Err(err) = file.write_all(&bytes).await {
+            recording_failure(Some(&request_dir), "http_request_body_write", &err).await;
+            raw_file = None;
+        }
+    }
+
+    if let Some(raw_file) = raw_file.as_mut() {
+        recording.before_stream_write().await;
+        if let Err(err) = raw_file.flush().await {
+            recording_failure(Some(&request_dir), "http_request_body_flush", &err).await;
+        }
+    }
+    let completion = match completion.await {
+        Ok(completion) => completion,
+        Err(err) => {
+            recording_failure(Some(&request_dir), "http_request_body_channel", &err).await;
+            return;
+        }
+    };
+    if let Some(error) = completion.queue_error.as_ref() {
+        recording_failure(Some(&request_dir), "http_request_body_queue", error).await;
+    }
+    if let Some(error) = completion.body_error.as_ref() {
+        recording_failure(Some(&request_dir), "http_request_body_stream", error).await;
+    }
+    if let Err(err) = update_request_body_bytes(&request_dir, completion.request_body_bytes).await {
+        recording_failure(Some(&request_dir), "http_request_metadata", &err).await;
+    }
+}
+
+async fn update_request_body_bytes(
+    request_dir: &std::path::Path,
+    request_body_bytes: usize,
+) -> anyhow::Result<()> {
+    let meta_path = request_dir.join("request_meta.json");
+    let raw = fs::read(&meta_path)
+        .await
+        .with_context(|| format!("read {}", meta_path.display()))?;
+    let mut request_meta: RequestMeta =
+        serde_json::from_slice(&raw).with_context(|| format!("parse {}", meta_path.display()))?;
+    request_meta.request_body_bytes = request_body_bytes;
+    write_json_file(meta_path, &request_meta).await
 }
 
 #[cfg(test)]
@@ -331,6 +439,83 @@ mod tests {
             b"first-second"
         );
         assert!(meta_path.exists());
+    }
+
+    #[tokio::test]
+    async fn slow_request_recording_does_not_delay_upstream_body() {
+        let app = Router::new().route(
+            "/",
+            axum::routing::post(|body: Body| async move {
+                axum::body::to_bytes(body, usize::MAX).await.unwrap()
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let temp = tempfile::tempdir().unwrap();
+        write_json_file(
+            temp.path().join("request_meta.json"),
+            &RequestMeta {
+                index: 0,
+                session_id: "test".to_owned(),
+                session_source: crate::types::SessionSource::Unknown,
+                started_at: now_rfc3339(),
+                method: "POST".to_owned(),
+                path: "/".to_owned(),
+                query: None,
+                upstream_url: format!("http://{addr}/"),
+                request_body_bytes: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let recording = RecordingContext::spawn({
+            let request_dir = temp.path().to_path_buf();
+            async move { Some(request_dir) }
+        })
+        .with_stream_write_delay(std::time::Duration::from_millis(500));
+        let body = Body::from_stream(stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"first-"));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b"second"));
+        });
+        let body = record_streaming_request(body, recording);
+
+        let forwarded = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            reqwest::Client::new()
+                .post(format!("http://{addr}/"))
+                .body(body)
+                .send()
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()
+        })
+        .await
+        .expect("slow recording must not delay the upstream request");
+        assert_eq!(forwarded, b"first-second".as_slice());
+
+        let meta_path = temp.path().join("request_meta.json");
+        for _ in 0..300 {
+            let complete = std::fs::read(&meta_path)
+                .ok()
+                .and_then(|raw| serde_json::from_slice::<RequestMeta>(&raw).ok())
+                .map(|meta| meta.request_body_bytes == forwarded.len())
+                .unwrap_or(false);
+            if complete {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            std::fs::read(temp.path().join("request_body.raw")).unwrap(),
+            forwarded
+        );
+        let meta: RequestMeta = serde_json::from_slice(&std::fs::read(meta_path).unwrap()).unwrap();
+        assert_eq!(meta.request_body_bytes, forwarded.len());
     }
 
     #[tokio::test]
@@ -535,7 +720,6 @@ fn start_http_recording(
     state: AppState,
     mut request_meta: RequestMeta,
     headers: HeaderMap,
-    body: Bytes,
     session_id: String,
 ) -> RecordingContext {
     RecordingContext::spawn(async move {
@@ -548,15 +732,7 @@ fn start_http_recording(
         };
         request_meta.index = index;
         let request_dir = request_dir(&state.output_dir, &session_id, index);
-        match create_http_recording(
-            &state,
-            &request_dir,
-            request_meta,
-            &headers,
-            &body,
-            &session_id,
-        )
-        .await
+        match create_http_recording(&state, &request_dir, request_meta, &headers, &session_id).await
         {
             Ok(request_dir) => request_dir,
             Err(err) => {
@@ -605,7 +781,6 @@ async fn create_http_recording(
     request_dir: &PathBuf,
     request_meta: RequestMeta,
     headers: &HeaderMap,
-    body: &Bytes,
     session_id: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
     fs::create_dir_all(request_dir)
@@ -617,7 +792,6 @@ async fn create_http_recording(
         &headers_to_records(headers, state.unsafe_record_secrets),
     )
     .await?;
-    write_bytes_file(request_dir.join("request_body.raw"), body).await?;
     write_manifest(state, session_id).await?;
     Ok(Some(request_dir.clone()))
 }
