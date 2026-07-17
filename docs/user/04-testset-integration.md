@@ -138,7 +138,9 @@ POST http://127.0.0.1:8787/codex-http/mock/responses
 
 ## 严格匹配行为
 
-mock 服务会根据请求 body 提取用户输入，找到对应 session，然后对请求进行严格匹配校验。
+mock 服务会优先扫描当前仓库 `testsets/<profile>/*/raw/` 中的已导出资产，根据请求 body 找到对应 session，然后对请求进行严格匹配校验。这样 `/api/testsets` 返回的测试集与 mock 实际使用的回放源保持一致。本地 profile recording 只在没有测试集匹配时作为临时回放的后备来源。
+
+首个请求匹配成功后，live session 会绑定到该测试集中的确切 source session；后续请求只按这个 session 的录制顺序继续匹配，不会切换到同哈希的本地旧录制。匹配索引写入 `~/.bridle-recording/<profile>/derived/mock/testsets/`，不会修改测试集 `raw/`。
 
 只有满足匹配规则时才返回对应录制响应；否则返回错误。这样可以避免测试在请求结构已经漂移时仍然误判通过。
 

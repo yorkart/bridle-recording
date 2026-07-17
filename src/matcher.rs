@@ -19,18 +19,32 @@ pub async fn find_recorded_match(
     recordings_dir: &Path,
     mock_derived_dir: &Path,
     incoming: &RequestMatch,
-) -> anyhow::Result<RecordedMatch> {
-    let mut sessions = fs::read_dir(recordings_dir)
-        .await
-        .with_context(|| format!("read recordings dir {}", recordings_dir.display()))?;
-    while let Some(session_entry) = sessions.next_entry().await? {
-        if !session_entry.file_type().await?.is_dir() {
-            continue;
+) -> anyhow::Result<Option<RecordedMatch>> {
+    let mut sessions = match fs::read_dir(recordings_dir).await {
+        Ok(sessions) => sessions,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("read recordings dir {}", recordings_dir.display()))
         }
-        let Some(session_id) = session_entry.file_name().to_str().map(ToOwned::to_owned) else {
+    };
+    let mut session_dirs = Vec::new();
+    while let Some(session_entry) = sessions.next_entry().await? {
+        if session_entry.file_type().await?.is_dir() {
+            session_dirs.push(session_entry.path());
+        }
+    }
+    session_dirs.sort();
+
+    for session_dir in session_dirs {
+        let Some(session_id) = session_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToOwned::to_owned)
+        else {
             continue;
         };
-        let requests_dir = session_entry.path().join("requests");
+        let requests_dir = session_dir.join("requests");
         let mut requests = match fs::read_dir(&requests_dir).await {
             Ok(requests) => requests,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
@@ -38,18 +52,22 @@ pub async fn find_recorded_match(
                 return Err(err).with_context(|| format!("read {}", requests_dir.display()))
             }
         };
+        let mut request_dirs = Vec::new();
         while let Some(request_entry) = requests.next_entry().await? {
-            if !request_entry.file_type().await?.is_dir() {
-                continue;
+            if request_entry.file_type().await?.is_dir() {
+                let Some(index) = request_entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.parse::<u64>().ok())
+                else {
+                    continue;
+                };
+                request_dirs.push((index, request_entry.path()));
             }
-            let Some(index) = request_entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u64>().ok())
-            else {
-                continue;
-            };
-            let request_dir = request_entry.path();
+        }
+        request_dirs.sort_by_key(|(index, _)| *index);
+
+        for (index, request_dir) in request_dirs {
             let derived_dir = mock_derived_dir
                 .join(&session_id)
                 .join("requests")
@@ -59,22 +77,59 @@ pub async fn find_recorded_match(
                 continue;
             };
             if recorded_match.hash == incoming.hash {
-                return Ok(RecordedMatch {
+                return Ok(Some(RecordedMatch {
                     session_id,
                     index,
+                    recordings_dir: recordings_dir.to_path_buf(),
+                    derived_recordings_dir: mock_derived_dir.to_path_buf(),
                     request_dir,
                     derived_dir,
-                });
+                }));
             }
         }
     }
 
-    Err(anyhow!(
-        "no recorded request matched route {} {} hash {}",
-        incoming.route.method,
-        incoming.route.path,
-        incoming.hash
-    ))
+    Ok(None)
+}
+
+pub async fn find_testset_recorded_match(
+    testsets_dir: &Path,
+    mock_derived_dir: &Path,
+    incoming: &RequestMatch,
+) -> anyhow::Result<Option<RecordedMatch>> {
+    let mut testsets = match fs::read_dir(testsets_dir).await {
+        Ok(testsets) => testsets,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("read testsets dir {}", testsets_dir.display()))
+        }
+    };
+    let mut testset_dirs = Vec::new();
+    while let Some(testset_entry) = testsets.next_entry().await? {
+        let Some(testset_id) = testset_entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if testset_id.starts_with('.') || !testset_entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let testset_dir = testset_entry.path();
+        if fs::try_exists(testset_dir.join("testset.json")).await? {
+            testset_dirs.push((testset_id, testset_dir));
+        }
+    }
+    testset_dirs.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (testset_id, testset_dir) in testset_dirs {
+        let recordings_dir = testset_dir.join("raw");
+        let derived_dir = mock_derived_dir.join("testsets").join(testset_id);
+        if let Some(recorded) = find_recorded_match(&recordings_dir, &derived_dir, incoming).await?
+        {
+            return Ok(Some(recorded));
+        }
+    }
+
+    Ok(None)
 }
 
 pub async fn load_or_build_request_match(

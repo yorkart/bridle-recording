@@ -29,6 +29,7 @@ pub struct Args {
 pub struct GatewayState {
     pub client: reqwest::Client,
     pub output_root: PathBuf,
+    pub testsets_root: PathBuf,
     pub access_log_path: PathBuf,
     pub profiles: Arc<HashMap<String, ProfileConfig>>,
     pub session_header: HeaderName,
@@ -41,6 +42,7 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub profile: ProfileConfig,
     pub output_dir: PathBuf,
+    pub testsets_dir: PathBuf,
     pub mock_derived_dir: PathBuf,
     pub session_header: HeaderName,
     pub counters: Arc<Mutex<HashMap<String, u64>>>,
@@ -105,6 +107,8 @@ pub struct MatchRoute {
 #[derive(Clone, Debug)]
 pub struct ReplaySession {
     pub recorded_session_id: String,
+    pub recordings_dir: PathBuf,
+    pub derived_recordings_dir: PathBuf,
     pub next_index: u64,
 }
 
@@ -122,6 +126,8 @@ pub struct ResponseRewriteReplacement {
 pub struct RecordedMatch {
     pub session_id: String,
     pub index: u64,
+    pub recordings_dir: PathBuf,
+    pub derived_recordings_dir: PathBuf,
     pub request_dir: PathBuf,
     pub derived_dir: PathBuf,
 }

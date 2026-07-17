@@ -475,6 +475,86 @@ async fn mock_replay_binds_session_and_requires_recorded_order() {
     assert!(mismatch.to_string().contains("read next recorded request"));
 }
 
+#[tokio::test]
+async fn mock_replay_prefers_repository_testset_over_stale_local_recording() {
+    let output_dir = tempfile::tempdir().unwrap();
+    let state = test_state(output_dir.path());
+    write_recorded_http_request(
+        output_dir.path(),
+        "stale-local-session",
+        0,
+        "list files",
+        b"data: stale-local-recording\n\n",
+    )
+    .await;
+    let testset_dir = state.testsets_dir.join("list-files");
+    let testset_raw_dir = testset_dir.join("raw");
+    write_json_file(
+        testset_dir.join("testset.json"),
+        &serde_json::json!({"first_user_input": "list files"}),
+    )
+    .await
+    .unwrap();
+    write_recorded_http_request(
+        &testset_raw_dir,
+        "exported-session",
+        0,
+        "list files",
+        b"data: from-testset\n\n",
+    )
+    .await;
+    write_recorded_http_request(
+        &testset_raw_dir,
+        "exported-session",
+        1,
+        "hi",
+        b"data: second-turn\n\n",
+    )
+    .await;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("thread-id"),
+        HeaderValue::from_static("live-testset-session"),
+    );
+    headers.insert(
+        axum::http::header::ACCEPT,
+        HeaderValue::from_static("text/event-stream"),
+    );
+
+    let first = handle_mock_proxy(
+        state.clone(),
+        Method::POST,
+        Uri::from_static("/mock/responses"),
+        headers.clone(),
+        "responses".to_owned(),
+        test_body("list files"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+
+    let second = handle_mock_proxy(
+        state.clone(),
+        Method::POST,
+        Uri::from_static("/mock/responses"),
+        headers,
+        "responses".to_owned(),
+        test_body("hi"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(second.status(), StatusCode::OK);
+
+    assert!(!testset_raw_dir
+        .join("exported-session/requests/000000/request_match.json")
+        .exists());
+    assert!(state
+        .mock_derived_dir
+        .join("testsets/list-files/exported-session/requests/000000/request_match.json")
+        .exists());
+}
+
 #[test]
 fn parses_sse_events_across_chunks() {
     let mut parser = SseParser::default();
@@ -893,6 +973,7 @@ fn test_state(output_dir: &Path) -> AppState {
             home_dir: output_dir.to_path_buf(),
         },
         output_dir: output_dir.to_path_buf(),
+        testsets_dir: output_dir.join("testsets/codex-http"),
         mock_derived_dir: output_dir.join(".mock-derived"),
         session_header: HeaderName::from_static(DEFAULT_SESSION_HEADER),
         counters: Arc::new(Mutex::new(HashMap::new())),
@@ -907,6 +988,7 @@ fn gateway_test_state(output_root: &Path, upstream: Url) -> GatewayState {
             .build()
             .unwrap(),
         output_root: output_root.to_path_buf(),
+        testsets_root: output_root.join("testsets"),
         access_log_path: output_root.join("access.log"),
         profiles: Arc::new(HashMap::from([
             (

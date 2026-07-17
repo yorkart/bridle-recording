@@ -192,6 +192,13 @@ The client does not need recorder-specific logic. It should behave like a normal
 OpenAI client; bridle-recording handles matching the request to existing
 recordings and replaying the recorded response.
 
+Replay first matches exported assets under
+`testsets/<profile>/*/raw/`. This keeps the mock source aligned with the assets
+returned by `/api/testsets`. Local profile recordings remain a fallback for
+ad-hoc replay when no saved testset matches. Once a live client session is
+matched, all later requests stay bound to that exact exported or local session
+and must follow its recorded order.
+
 ## Replay Match Whitelist
 
 Replay uses exact matching on a canonical whitelist of request fields. JSON

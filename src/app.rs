@@ -43,6 +43,7 @@ pub async fn run() -> anyhow::Result<()> {
         .tcp_keepalive(std::time::Duration::from_secs(UPSTREAM_TCP_KEEPALIVE_SECS))
         .build()
         .context("build upstream HTTP client")?;
+    let repo_root = std::env::current_dir().context("resolve current git repository root")?;
     let profile_root = default_profile_root();
     let access_log_path = profile_root.join("access.log");
     let profiles = load_profiles(&profile_root).await?;
@@ -54,6 +55,7 @@ pub async fn run() -> anyhow::Result<()> {
     let state = GatewayState {
         client,
         output_root: profile_root,
+        testsets_root: repo_root.join("testsets"),
         access_log_path,
         profiles: std::sync::Arc::new(profiles),
         session_header,
@@ -215,6 +217,7 @@ fn resolve_profile(state: &GatewayState, profile: &str) -> anyhow::Result<AppSta
         client: state.client.clone(),
         profile: profile_config.clone(),
         output_dir: profile_config.home_dir.join("recordings"),
+        testsets_dir: state.testsets_root.join(profile),
         mock_derived_dir: profile_config.home_dir.join("derived").join("mock"),
         session_header: state.session_header.clone(),
         counters: state.counters.clone(),

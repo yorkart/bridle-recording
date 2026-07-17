@@ -11,7 +11,10 @@ use bytes::Bytes;
 use tokio::fs;
 
 use crate::{
-    matcher::{build_request_match, find_recorded_match, load_or_build_request_match},
+    matcher::{
+        build_request_match, find_recorded_match, find_testset_recorded_match,
+        load_or_build_request_match,
+    },
     types::{
         AppState, HeaderRecord, HeaderValueRecord, RecordedMatch, ReplaySession,
         ResponseRewriteSpec,
@@ -37,12 +40,12 @@ pub async fn handle_mock_proxy(
         let mut replay_sessions = state.replay_sessions.lock().await;
         if let Some(session) = replay_sessions.get_mut(&replay_key(&live_session_id)) {
             let request_dir = recording_request_dir(
-                &state.output_dir,
+                &session.recordings_dir,
                 &session.recorded_session_id,
                 session.next_index,
             );
             let derived_dir = recording_request_dir(
-                &state.mock_derived_dir,
+                &session.derived_recordings_dir,
                 &session.recorded_session_id,
                 session.next_index,
             );
@@ -65,19 +68,41 @@ pub async fn handle_mock_proxy(
             let recorded = RecordedMatch {
                 session_id: session.recorded_session_id.clone(),
                 index: session.next_index,
+                recordings_dir: session.recordings_dir.clone(),
+                derived_recordings_dir: session.derived_recordings_dir.clone(),
                 request_dir,
                 derived_dir,
             };
             session.next_index += 1;
             recorded
         } else {
-            let recorded =
-                find_recorded_match(&state.output_dir, &state.mock_derived_dir, &incoming_match)
-                    .await?;
+            let recorded = match find_testset_recorded_match(
+                &state.testsets_dir,
+                &state.mock_derived_dir,
+                &incoming_match,
+            )
+            .await?
+            {
+                Some(recorded) => recorded,
+                None => {
+                    find_recorded_match(&state.output_dir, &state.mock_derived_dir, &incoming_match)
+                        .await?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "no testset or recording matched route {} {} hash {}",
+                                incoming_match.route.method,
+                                incoming_match.route.path,
+                                incoming_match.hash
+                            )
+                        })?
+                }
+            };
             replay_sessions.insert(
                 replay_key(&live_session_id),
                 ReplaySession {
                     recorded_session_id: recorded.session_id.clone(),
+                    recordings_dir: recorded.recordings_dir.clone(),
+                    derived_recordings_dir: recorded.derived_recordings_dir.clone(),
                     next_index: recorded.index + 1,
                 },
             );

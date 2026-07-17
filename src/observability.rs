@@ -66,15 +66,18 @@ pub async fn profiles(State(state): State<GatewayState>) -> Response {
     Json(serde_json::json!({ "profiles": profiles })).into_response()
 }
 
-pub async fn testsets() -> Response {
-    match testsets_inner(None).await {
+pub async fn testsets(State(state): State<GatewayState>) -> Response {
+    match testsets_inner(&state.testsets_root, None).await {
         Ok(testsets) => Json(serde_json::json!({ "testsets": testsets })).into_response(),
         Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
 }
 
-pub async fn profile_testsets(AxumPath(profile): AxumPath<String>) -> Response {
-    match testsets_inner(Some(&profile)).await {
+pub async fn profile_testsets(
+    State(state): State<GatewayState>,
+    AxumPath(profile): AxumPath<String>,
+) -> Response {
+    match testsets_inner(&state.testsets_root, Some(&profile)).await {
         Ok(testsets) => Json(serde_json::json!({ "testsets": testsets })).into_response(),
         Err(err) => api_error(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
@@ -161,11 +164,7 @@ async fn save_testset_inner(
     let first_user_input = plan.first_user_input.clone();
     let user_inputs = plan.user_inputs.clone();
     let user_input_sha256 = sha256_hex(first_user_input.as_bytes());
-    let repo_root = std::env::current_dir().context("resolve current git repository root")?;
-    let testset_dir = repo_root
-        .join("testsets")
-        .join(profile)
-        .join(&user_input_sha256);
+    let testset_dir = state.testsets_root.join(profile).join(&user_input_sha256);
     let raw_dir = testset_dir.join("raw").join(session_id);
 
     if fs::try_exists(&testset_dir).await? && !request.replace {
@@ -180,8 +179,8 @@ async fn save_testset_inner(
         }));
     }
 
-    let temp_dir = repo_root
-        .join("testsets")
+    let temp_dir = state
+        .testsets_root
         .join(profile)
         .join(format!(".{user_input_sha256}.tmp"));
     if fs::try_exists(&temp_dir).await? {
@@ -236,9 +235,10 @@ async fn save_testset_inner(
     })
 }
 
-async fn testsets_inner(profile_filter: Option<&str>) -> anyhow::Result<Vec<TestsetSummary>> {
-    let repo_root = std::env::current_dir().context("resolve current git repository root")?;
-    let testsets_dir = repo_root.join("testsets");
+async fn testsets_inner(
+    testsets_dir: &Path,
+    profile_filter: Option<&str>,
+) -> anyhow::Result<Vec<TestsetSummary>> {
     let mut out = Vec::new();
     let mut profile_entries = match fs::read_dir(&testsets_dir).await {
         Ok(entries) => entries,
