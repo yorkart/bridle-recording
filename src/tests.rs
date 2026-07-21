@@ -16,7 +16,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as TestWsMessage};
 use tower::ServiceExt;
 
 use crate::{
-    app::proxy,
+    app::{load_profiles_with_claude_settings, proxy},
     constants::{CODEX_TURN_METADATA_HEADER, DEFAULT_SESSION_HEADER, UNKNOWN_SESSION},
     matcher::build_request_match,
     proxy::{
@@ -81,6 +81,24 @@ fn uses_codex_thread_id_header_as_fallback() {
 }
 
 #[test]
+fn uses_claude_code_session_id_header_as_fallback() {
+    let mut headers = HeaderMap::new();
+    let header = HeaderName::from_static(DEFAULT_SESSION_HEADER);
+    headers.insert(
+        HeaderName::from_static("x-claude-code-session-id"),
+        HeaderValue::from_static("019f8505-6d2f-7603-91c3-23beae5c9267"),
+    );
+
+    let (session, source) = session_from_headers(&headers, &header);
+
+    assert_eq!(session, "019f8505-6d2f-7603-91c3-23beae5c9267");
+    assert!(matches!(
+        source,
+        SessionSource::Header { name } if name == "x-claude-code-session-id"
+    ));
+}
+
+#[test]
 fn uses_codex_turn_metadata_as_fallback() {
     let mut headers = HeaderMap::new();
     let header = HeaderName::from_static(DEFAULT_SESSION_HEADER);
@@ -109,6 +127,58 @@ fn joins_upstream_base_path_and_request_path() {
         url.as_str(),
         "https://example.test/base/v1/chat/completions?a=1"
     );
+}
+
+#[tokio::test]
+async fn claude_profile_reads_upstream_from_user_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile_root = temp.path().join("profiles");
+    let profile_dir = profile_root.join("claude");
+    let claude_settings = temp.path().join("claude-settings.json");
+    fs::create_dir_all(&profile_dir).await.unwrap();
+    write_bytes_file(
+        profile_dir.join("bridle-profile.toml"),
+        b"upstream_from = \"claude-settings\"\nsupports_websocket = false\n",
+    )
+    .await
+    .unwrap();
+    write_bytes_file(
+        claude_settings.clone(),
+        br#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.example/anthropic","ANTHROPIC_AUTH_TOKEN":"not-read-as-profile-data"}}"#,
+    )
+    .await
+    .unwrap();
+
+    let profiles = load_profiles_with_claude_settings(&profile_root, &claude_settings)
+        .await
+        .unwrap();
+    let claude = profiles.get("claude").unwrap();
+
+    assert_eq!(claude.upstream.as_str(), "https://relay.example/anthropic");
+    assert!(!claude.supports_websocket);
+    assert_eq!(claude.home_dir, profile_dir);
+}
+
+#[tokio::test]
+async fn auto_discovers_claude_profile_without_runtime_template() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile_root = temp.path().join("profiles");
+    let claude_settings = temp.path().join("claude-settings.json");
+    fs::create_dir_all(&profile_root).await.unwrap();
+    write_bytes_file(
+        claude_settings.clone(),
+        br#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.example/anthropic"}}"#,
+    )
+    .await
+    .unwrap();
+
+    let profiles = load_profiles_with_claude_settings(&profile_root, &claude_settings)
+        .await
+        .unwrap();
+    let claude = profiles.get("claude").unwrap();
+
+    assert_eq!(claude.upstream.as_str(), "https://relay.example/anthropic");
+    assert_eq!(claude.home_dir, profile_root.join("claude"));
 }
 
 #[test]

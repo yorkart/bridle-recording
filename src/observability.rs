@@ -13,6 +13,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chrono::{DateTime, Utc};
+use flate2::read::MultiGzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt};
@@ -473,8 +474,15 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         });
         recording_state = "incomplete".to_owned();
     }
-    if let Some(incomplete_warning) =
-        load_recording_incomplete(&request_dir.join("recording_incomplete.json")).await
+    let request_body_bytes = fs::read(request_dir.join("request_body.raw"))
+        .await
+        .with_context(|| format!("read request body in {}", request_dir.display()))?;
+    if let Some(incomplete_warning) = load_recording_incomplete(
+        &request_dir.join("recording_incomplete.json"),
+        &request_dir,
+        request_body_bytes.len(),
+    )
+    .await
     {
         recording_state = "incomplete".to_owned();
         recording_warning = Some(match recording_warning {
@@ -482,9 +490,6 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
             None => incomplete_warning,
         });
     }
-    let request_body_bytes = fs::read(request_dir.join("request_body.raw"))
-        .await
-        .with_context(|| format!("read request body in {}", request_dir.display()))?;
     let request_body = if request_body_bytes.is_empty() {
         serde_json::Value::Null
     } else {
@@ -495,13 +500,23 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
             })
         })
     };
+    let mut response_decode_warning = None;
     let sse_path = request_dir.join("response_sse.raw");
     let (sse, response_body, recorded_response_body_bytes) = if fs::try_exists(&sse_path).await? {
         let sse_bytes = fs::read(&sse_path)
             .await
             .with_context(|| format!("read response_sse.raw in {}", request_dir.display()))?;
         let byte_count = sse_bytes.len();
-        (parse_response_sse(&sse_bytes), None, Some(byte_count))
+        let observed_bytes =
+            match decode_response_body_for_observability(&request_dir, &sse_bytes).await {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    response_decode_warning =
+                        Some(format!("response body could not be decoded: {err}"));
+                    sse_bytes
+                }
+            };
+        (parse_response_sse(&observed_bytes), None, Some(byte_count))
     } else {
         let body_path = request_dir.join("response_body.raw");
         if fs::try_exists(&body_path).await? {
@@ -509,12 +524,21 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
                 .await
                 .with_context(|| format!("read response_body.raw in {}", request_dir.display()))?;
             let byte_count = body.len();
-            if looks_like_sse_response(&body) {
-                (parse_response_sse(&body), None, Some(byte_count))
+            let observed_body =
+                match decode_response_body_for_observability(&request_dir, &body).await {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        response_decode_warning =
+                            Some(format!("response body could not be decoded: {err}"));
+                        body
+                    }
+                };
+            if looks_like_sse_response(&observed_body) {
+                (parse_response_sse(&observed_body), None, Some(byte_count))
             } else {
                 (
                     ParsedResponseSse::default(),
-                    Some(observed_payload(&body)),
+                    Some(observed_payload(&observed_body)),
                     Some(byte_count),
                 )
             }
@@ -547,6 +571,15 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
             }
         }
     };
+    if let Some(warning) = response_decode_warning {
+        if recording_state == "complete" {
+            recording_state = "degraded".to_owned();
+        }
+        recording_warning = Some(match recording_warning {
+            Some(existing) => format!("{existing}; {warning}"),
+            None => warning,
+        });
+    }
 
     let prompt_blocks = prompt_blocks(&request_body);
     let visible_user_messages = visible_user_messages(&prompt_blocks);
@@ -580,6 +613,7 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         .unwrap_or(false);
     let input_count = request_body
         .get("input")
+        .or_else(|| request_body.get("messages"))
         .and_then(serde_json::Value::as_array)
         .map_or(0, Vec::len);
     let completed_at = if is_websocket {
@@ -667,7 +701,7 @@ async fn load_observed_call(index: String, request_dir: PathBuf) -> anyhow::Resu
         function_calls: sse.function_calls,
         output_text,
         response_body,
-        usage: sse.completed_response.get("usage").cloned(),
+        usage: observed_usage(&sse.completed_response),
         event_counts: sse.event_counts,
         sse_events: sse.events,
         websocket_frames,
@@ -737,7 +771,11 @@ async fn load_response_meta(path: &Path) -> (Option<ResponseMeta>, String, Optio
     }
 }
 
-async fn load_recording_incomplete(path: &Path) -> Option<String> {
+async fn load_recording_incomplete(
+    path: &Path,
+    request_dir: &Path,
+    recorded_request_body_bytes: usize,
+) -> Option<String> {
     let bytes = match fs::read(path).await {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
@@ -755,11 +793,84 @@ async fn load_recording_incomplete(path: &Path) -> Option<String> {
         .get("stage")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
+    if stage == "http_request_body_stream"
+        && request_body_matches_content_length(request_dir, recorded_request_body_bytes).await
+    {
+        return None;
+    }
     let error = marker
         .get("error")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("recording write failed");
     Some(format!("recording failed during {stage}: {error}"))
+}
+
+async fn request_body_matches_content_length(request_dir: &Path, recorded_bytes: usize) -> bool {
+    let Ok(headers) =
+        read_json::<Vec<HeaderRecord>>(&request_dir.join("request_headers.json")).await
+    else {
+        return false;
+    };
+    recorded_header_text(&headers, "content-length")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        == Some(recorded_bytes)
+}
+
+async fn decode_response_body_for_observability(
+    request_dir: &Path,
+    bytes: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let headers_path = request_dir.join("response_headers.json");
+    if !fs::try_exists(&headers_path).await? {
+        return Ok(bytes.to_vec());
+    }
+    let headers = read_json::<Vec<HeaderRecord>>(&headers_path)
+        .await
+        .with_context(|| format!("read {}", headers_path.display()))?;
+    let Some(encodings) = recorded_header_text(&headers, "content-encoding") else {
+        return Ok(bytes.to_vec());
+    };
+
+    let mut decoded = bytes.to_vec();
+    for encoding in encodings
+        .split(',')
+        .map(str::trim)
+        .filter(|encoding| !encoding.is_empty())
+        .rev()
+    {
+        decoded = match encoding.to_ascii_lowercase().as_str() {
+            "identity" => decoded,
+            "gzip" | "x-gzip" => {
+                let mut decoder = MultiGzDecoder::new(std::io::Cursor::new(&decoded));
+                let mut out = Vec::new();
+                decoder
+                    .read_to_end(&mut out)
+                    .with_context(|| format!("decode {encoding} response body"))?;
+                out
+            }
+            "zstd" => {
+                let mut decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(&decoded))
+                    .context("create zstd response body decoder")?;
+                let mut out = Vec::new();
+                decoder
+                    .read_to_end(&mut out)
+                    .context("decode zstd response body")?;
+                out
+            }
+            unsupported => anyhow::bail!("unsupported content-encoding: {unsupported}"),
+        };
+    }
+    Ok(decoded)
+}
+
+fn recorded_header_text<'a>(headers: &'a [HeaderRecord], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .and_then(|header| match &header.value {
+            HeaderValueRecord::Text { value } => Some(value.as_str()),
+            HeaderValueRecord::BinaryBase64 { .. } => None,
+        })
 }
 
 fn decode_request_body_json(bytes: &[u8]) -> anyhow::Result<serde_json::Value> {
@@ -963,6 +1074,7 @@ fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
     let mut output_text = String::new();
     let mut function_calls = Vec::new();
     let mut tool_inputs = HashMap::new();
+    let mut claude_tool_inputs = BTreeMap::<usize, ClaudeToolInput>::new();
     let mut completed_response = serde_json::Value::Object(serde_json::Map::new());
 
     for event in parser.push(bytes) {
@@ -991,6 +1103,128 @@ fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
         };
 
         match event_type.as_str() {
+            "message_start" => {
+                completed_response = value
+                    .get("message")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+            }
+            "content_block_start" => {
+                let index = value
+                    .get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|index| usize::try_from(index).ok());
+                let block = value.get("content_block");
+                match block
+                    .and_then(|block| block.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("text") => {
+                        if let Some(text) = block
+                            .and_then(|block| block.get("text"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            output_text.push_str(text);
+                        }
+                    }
+                    Some("tool_use") => {
+                        if let (Some(index), Some(block)) = (index, block) {
+                            let initial_input = block
+                                .get("input")
+                                .filter(|input| {
+                                    !input.as_object().is_some_and(serde_json::Map::is_empty)
+                                })
+                                .and_then(|input| serde_json::to_string(input).ok())
+                                .unwrap_or_default();
+                            claude_tool_inputs.insert(
+                                index,
+                                ClaudeToolInput {
+                                    id: block
+                                        .get("id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or_default()
+                                        .to_owned(),
+                                    name: block
+                                        .get("name")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("unknown")
+                                        .to_owned(),
+                                    input: initial_input,
+                                },
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_delta" => {
+                let delta = value.get("delta");
+                match delta
+                    .and_then(|delta| delta.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    Some("text_delta") => {
+                        if let Some(text) = delta
+                            .and_then(|delta| delta.get("text"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            output_text.push_str(text);
+                        }
+                    }
+                    Some("input_json_delta") => {
+                        if let (Some(index), Some(partial_json)) = (
+                            value
+                                .get("index")
+                                .and_then(serde_json::Value::as_u64)
+                                .and_then(|index| usize::try_from(index).ok()),
+                            delta
+                                .and_then(|delta| delta.get("partial_json"))
+                                .and_then(serde_json::Value::as_str),
+                        ) {
+                            if let Some(tool) = claude_tool_inputs.get_mut(&index) {
+                                tool.input.push_str(partial_json);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "content_block_stop" => {
+                if let Some(tool) = value
+                    .get("index")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .and_then(|index| claude_tool_inputs.remove(&index))
+                {
+                    function_calls.push(ObservedFunctionCall {
+                        id: tool.id.clone(),
+                        call_id: tool.id,
+                        name: tool.name,
+                        status: "completed".to_owned(),
+                        arguments: pretty_json_str(&tool.input),
+                        result: None,
+                    });
+                }
+            }
+            "message_delta" => {
+                merge_json_object(
+                    &mut completed_response,
+                    value.get("delta").unwrap_or(&serde_json::Value::Null),
+                );
+                if let Some(usage) = value.get("usage") {
+                    let completed_usage = completed_response.as_object_mut().and_then(|response| {
+                        response
+                            .entry("usage")
+                            .or_insert_with(|| serde_json::json!({}))
+                            .as_object_mut()
+                    });
+                    if let (Some(completed_usage), Some(usage)) =
+                        (completed_usage, usage.as_object())
+                    {
+                        completed_usage.extend(usage.clone());
+                    }
+                }
+            }
             "response.output_text.delta" => {
                 if let Some(delta) = value.get("delta").and_then(serde_json::Value::as_str) {
                     output_text.push_str(delta);
@@ -1069,6 +1303,31 @@ fn parse_response_sse(bytes: &[u8]) -> ParsedResponseSse {
     }
 }
 
+fn merge_json_object(target: &mut serde_json::Value, source: &serde_json::Value) {
+    let (Some(target), Some(source)) = (target.as_object_mut(), source.as_object()) else {
+        return;
+    };
+    target.extend(source.clone());
+}
+
+fn observed_usage(response: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut usage = response.get("usage")?.clone();
+    let usage_object = usage.as_object_mut()?;
+    if !usage_object.contains_key("total_tokens") {
+        let total_tokens = [
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .into_iter()
+        .filter_map(|key| usage_object.get(key).and_then(serde_json::Value::as_u64))
+        .sum::<u64>();
+        usage_object.insert("total_tokens".to_owned(), total_tokens.into());
+    }
+    Some(usage)
+}
+
 fn prompt_blocks(request_body: &serde_json::Value) -> Vec<PromptBlock> {
     let mut blocks = Vec::new();
     if let Some(instructions) = request_body
@@ -1085,32 +1344,69 @@ fn prompt_blocks(request_body: &serde_json::Value) -> Vec<PromptBlock> {
         });
     }
 
-    let Some(input) = request_body
+    append_prompt_content_blocks(&mut blocks, "system", request_body.get("system"));
+
+    if let Some(input) = request_body
         .get("input")
         .and_then(serde_json::Value::as_array)
-    else {
-        return blocks;
-    };
-    blocks.extend(input.iter().filter_map(|item| {
-        if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
-            return None;
+    {
+        blocks.extend(input.iter().filter_map(|item| {
+            if item.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+                return None;
+            }
+            let role = item
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("message")
+                .to_owned();
+            let text = content_text(item.get("content"));
+            let block_type = classify_prompt_block(&role, &text);
+            Some(PromptBlock {
+                role,
+                block_type,
+                chars: text.chars().count(),
+                excerpt: excerpt(&text, 760),
+                text,
+            })
+        }));
+    }
+    if let Some(messages) = request_body
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+    {
+        for message in messages {
+            let role = message
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("message");
+            append_prompt_content_blocks(&mut blocks, role, message.get("content"));
         }
-        let role = item
-            .get("role")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("message")
-            .to_owned();
-        let text = content_text(item.get("content"));
-        let block_type = classify_prompt_block(&role, &text);
-        Some(PromptBlock {
-            role,
-            block_type,
-            chars: text.chars().count(),
-            excerpt: excerpt(&text, 760),
-            text,
-        })
-    }));
+    }
     blocks
+}
+
+fn append_prompt_content_blocks(
+    blocks: &mut Vec<PromptBlock>,
+    role: &str,
+    content: Option<&serde_json::Value>,
+) {
+    let texts = match content {
+        Some(serde_json::Value::String(text)) => vec![text.as_str()],
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .collect(),
+        _ => Vec::new(),
+    };
+    for text in texts.into_iter().filter(|text| !text.trim().is_empty()) {
+        blocks.push(PromptBlock {
+            role: role.to_owned(),
+            block_type: classify_prompt_block(role, text),
+            chars: text.chars().count(),
+            excerpt: excerpt(text, 760),
+            text: text.to_owned(),
+        });
+    }
 }
 
 fn visible_user_messages(blocks: &[PromptBlock]) -> Vec<String> {
@@ -1124,6 +1420,7 @@ fn visible_user_messages(blocks: &[PromptBlock]) -> Vec<String> {
     blocks
         .iter()
         .filter(|block| block.role == "user")
+        .filter(|block| block.block_type != "system_reminder")
         .filter_map(|block| {
             let mut text = block.text.clone();
             trim_prompt_text(&mut text, &remove_derived).then(|| text.trim().to_owned())
@@ -1143,6 +1440,8 @@ fn classify_prompt_block(role: &str, text: &str) -> String {
     let trimmed = text.trim_start();
     if trimmed.starts_with("<environment_context>") {
         "environment"
+    } else if trimmed.starts_with("<system-reminder>") {
+        "system_reminder"
     } else if trimmed.starts_with("<permissions instructions>") {
         "permissions"
     } else if trimmed.starts_with("<skills_instructions>") {
@@ -1211,7 +1510,7 @@ fn tool_definitions(request_body: &serde_json::Value) -> Vec<ToolDefinition> {
 }
 
 fn previous_tool_outputs(request_body: &serde_json::Value) -> Vec<ToolOutput> {
-    request_body
+    let mut outputs = request_body
         .get("input")
         .and_then(serde_json::Value::as_array)
         .into_iter()
@@ -1230,11 +1529,37 @@ fn previous_tool_outputs(request_body: &serde_json::Value) -> Vec<ToolOutput> {
                 .to_owned(),
             output: tool_output_text(item.get("output")),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    outputs.extend(
+        request_body
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|message| {
+                message
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|part| {
+                part.get("type").and_then(serde_json::Value::as_str) == Some("tool_result")
+            })
+            .map(|part| ToolOutput {
+                call_id: part
+                    .get("tool_use_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                output: tool_output_text(part.get("content")),
+            }),
+    );
+    outputs
 }
 
 fn previous_function_calls(request_body: &serde_json::Value) -> Vec<ObservedFunctionCall> {
-    request_body
+    let mut calls = request_body
         .get("input")
         .and_then(serde_json::Value::as_array)
         .into_iter()
@@ -1269,7 +1594,45 @@ fn previous_function_calls(request_body: &serde_json::Value) -> Vec<ObservedFunc
             ),
             result: None,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    calls.extend(
+        request_body
+            .get("messages")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|message| {
+                message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+            })
+            .flat_map(|message| {
+                message
+                    .get("content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|part| part.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+            .map(|part| {
+                let id = part
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                ObservedFunctionCall {
+                    id: id.clone(),
+                    call_id: id,
+                    name: part
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_owned(),
+                    status: "completed".to_owned(),
+                    arguments: pretty_json_value(part.get("input")),
+                    result: None,
+                }
+            }),
+    );
+    calls
 }
 
 fn is_tool_call_type(item_type: Option<&str>) -> bool {
@@ -1376,6 +1739,14 @@ fn pretty_json_str(text: &str) -> String {
         .ok()
         .and_then(|value| serde_json::to_string_pretty(&value).ok())
         .unwrap_or_else(|| text.to_owned())
+}
+
+fn pretty_json_value(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(text)) => pretty_json_str(text),
+        Some(value) => serde_json::to_string_pretty(value).unwrap_or_default(),
+        None => String::new(),
+    }
 }
 
 fn duration_ms(started_at: &str, completed_at: &str) -> Option<i64> {
@@ -2573,6 +2944,12 @@ struct ParsedResponseSse {
     events: Vec<ObservedSseEvent>,
 }
 
+struct ClaudeToolInput {
+    id: String,
+    name: String,
+    input: String,
+}
+
 const OBSERVABILITY_HTML: &str = include_str!("observability_ui.html");
 
 #[cfg(test)]
@@ -2773,6 +3150,154 @@ data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id"
         assert_eq!(parsed.events[1].data, "plain text");
         assert_eq!(parsed.event_counts["response.created"], 1);
         assert_eq!(parsed.event_counts["note"], 1);
+    }
+
+    #[test]
+    fn parses_claude_messages_prompt_and_tool_history() {
+        let body = serde_json::json!({
+            "system": [
+                {"type": "text", "text": "You are Claude Code."},
+                {"type": "text", "text": "Follow the project instructions."}
+            ],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "<system-reminder>derived context</system-reminder>"},
+                    {"type": "text", "text": "ping"}
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "/tmp/a"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "contents"}
+                ]}
+            ]
+        });
+
+        let blocks = prompt_blocks(&body);
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(blocks[0].role, "system");
+        assert_eq!(blocks[2].block_type, "system_reminder");
+        assert_eq!(visible_user_messages(&blocks), vec!["ping"]);
+
+        let calls = previous_function_calls(&body);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].call_id, "toolu_1");
+        assert_eq!(calls[0].name, "Read");
+        assert!(calls[0].arguments.contains("file_path"));
+
+        let outputs = previous_tool_outputs(&body);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].call_id, "toolu_1");
+        assert_eq!(outputs[0].output, "contents");
+    }
+
+    #[test]
+    fn parses_claude_messages_sse_text_tools_and_usage() {
+        let bytes = br#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test","usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/tmp/a\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
+        let parsed = parse_response_sse(bytes);
+
+        assert_eq!(parsed.output_text, "hello");
+        assert_eq!(parsed.completed_response["id"], "msg_1");
+        assert_eq!(parsed.completed_response["model"], "claude-test");
+        assert_eq!(parsed.completed_response["stop_reason"], "tool_use");
+        assert_eq!(parsed.completed_response["usage"]["input_tokens"], 10);
+        assert_eq!(parsed.completed_response["usage"]["output_tokens"], 5);
+        assert_eq!(
+            observed_usage(&parsed.completed_response).unwrap()["total_tokens"],
+            15
+        );
+        assert_eq!(parsed.function_calls.len(), 1);
+        assert_eq!(parsed.function_calls[0].call_id, "toolu_1");
+        assert_eq!(parsed.function_calls[0].name, "Read");
+        assert!(parsed.function_calls[0].arguments.contains("file_path"));
+        assert_eq!(parsed.event_counts["content_block_delta"], 2);
+    }
+
+    #[tokio::test]
+    async fn decodes_gzip_response_only_for_observability() {
+        let temp = tempfile::tempdir().unwrap();
+        let request_dir = temp.path();
+        write_json_pretty(
+            request_dir.join("response_headers.json"),
+            &vec![text_header("content-encoding", "gzip")],
+        )
+        .await
+        .unwrap();
+        let original = b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, original).unwrap();
+        let encoded = encoder.finish().unwrap();
+
+        let decoded = decode_response_body_for_observability(request_dir, &encoded)
+            .await
+            .unwrap();
+
+        assert_eq!(decoded, original);
+        assert_ne!(encoded, original);
+    }
+
+    #[tokio::test]
+    async fn ignores_false_incomplete_marker_when_content_length_was_fully_recorded() {
+        let temp = tempfile::tempdir().unwrap();
+        write_json_pretty(
+            temp.path().join("request_headers.json"),
+            &vec![text_header("content-length", "4")],
+        )
+        .await
+        .unwrap();
+        write_json_pretty(
+            temp.path().join("recording_incomplete.json"),
+            &serde_json::json!({
+                "incomplete": true,
+                "stage": "http_request_body_stream",
+                "error": "upstream stopped consuming the request body before it completed"
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(load_recording_incomplete(
+            &temp.path().join("recording_incomplete.json"),
+            temp.path(),
+            4,
+        )
+        .await
+        .is_none());
+        assert!(load_recording_incomplete(
+            &temp.path().join("recording_incomplete.json"),
+            temp.path(),
+            3,
+        )
+        .await
+        .is_some());
     }
 
     #[tokio::test]
@@ -3212,7 +3737,9 @@ data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id"
         )
         .unwrap();
 
-        let warning = load_recording_incomplete(&path).await.unwrap();
+        let warning = load_recording_incomplete(&path, temp.path(), 0)
+            .await
+            .unwrap();
 
         assert!(warning.contains("http_response_body_write"));
         assert!(warning.contains("disk full"));

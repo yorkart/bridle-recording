@@ -21,6 +21,13 @@ raw/<source_session_id>/
 
 ## 发现测试集
 
+如果接入方尚不知道服务能力，可以先请求 `/help`，再从 `operations` 中查找 `name` 为 `list_testsets` 的操作。该操作会给出测试集接口路径、可用 profile 和返回字段 schema：
+
+```sh
+curl -s http://127.0.0.1:8787/help \
+  | jq '.operations[] | select(.name == "list_testsets")'
+```
+
 启动 recorder 后，使用方可以调用：
 
 ```text

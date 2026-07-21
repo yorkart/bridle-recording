@@ -13,14 +13,16 @@ use tokio::{fs, net::TcpListener};
 use tracing::{error, info, warn};
 
 use crate::{
-    constants::{UPSTREAM_POOL_IDLE_TIMEOUT_SECS, UPSTREAM_TCP_KEEPALIVE_SECS},
+    constants::{
+        DEFAULT_CLAUDE_UPSTREAM, UPSTREAM_POOL_IDLE_TIMEOUT_SECS, UPSTREAM_TCP_KEEPALIVE_SECS,
+    },
     proxy::{
         http::handle_proxy,
         replay::handle_mock_proxy,
         websocket::{prepare_websocket_proxy, run_websocket_proxy},
     },
     recording::append_access_log_line,
-    types::{AppState, Args, GatewayState, ProfileConfig},
+    types::{AppState, Args, GatewayState, ProfileConfig, ProfileFile, ProfileUpstreamSource},
 };
 
 pub async fn run() -> anyhow::Result<()> {
@@ -67,6 +69,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/help", get(crate::help::help))
         .route("/ui", get(crate::observability::ui))
         .route("/api/testsets", get(crate::observability::testsets))
         .route(
@@ -153,13 +156,34 @@ fn default_profile_root() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(".bridle-recording"))
 }
 
+fn default_claude_settings_path() -> std::path::PathBuf {
+    std::env::var_os("BRIDLE_CLAUDE_SETTINGS_PATH")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .map(|home| home.join(".claude").join("settings.json"))
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from(".claude/settings.json"))
+}
+
 async fn load_profiles(
     profile_root: &std::path::Path,
+) -> anyhow::Result<std::collections::HashMap<String, ProfileConfig>> {
+    load_profiles_with_claude_settings(profile_root, &default_claude_settings_path()).await
+}
+
+pub(crate) async fn load_profiles_with_claude_settings(
+    profile_root: &std::path::Path,
+    claude_settings_path: &std::path::Path,
 ) -> anyhow::Result<std::collections::HashMap<String, ProfileConfig>> {
     let mut profiles = std::collections::HashMap::new();
     let mut entries = match fs::read_dir(profile_root).await {
         Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(profiles),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            discover_claude_profile(&mut profiles, profile_root, claude_settings_path).await;
+            return Ok(profiles);
+        }
         Err(err) => {
             return Err(err)
                 .with_context(|| format!("read profile root {}", profile_root.display()))
@@ -190,21 +214,116 @@ async fn load_profiles(
         let raw = fs::read_to_string(&meta_path)
             .await
             .with_context(|| format!("read {}", meta_path.display()))?;
-        let file: crate::types::ProfileFile =
+        let file: ProfileFile =
             toml::from_str(&raw).with_context(|| format!("parse {}", meta_path.display()))?;
+        let upstream = resolve_profile_upstream(&file, &meta_path, claude_settings_path).await?;
         profiles.insert(
             name.clone(),
             ProfileConfig {
                 name,
-                upstream: reqwest::Url::parse(&file.upstream)
-                    .with_context(|| format!("parse upstream in {}", meta_path.display()))?,
+                upstream,
                 supports_websocket: file.supports_websocket,
                 home_dir,
             },
         );
     }
 
+    discover_claude_profile(&mut profiles, profile_root, claude_settings_path).await;
     Ok(profiles)
+}
+
+async fn discover_claude_profile(
+    profiles: &mut std::collections::HashMap<String, ProfileConfig>,
+    profile_root: &std::path::Path,
+    claude_settings_path: &std::path::Path,
+) {
+    if profiles.contains_key("claude")
+        || !fs::try_exists(claude_settings_path).await.unwrap_or(false)
+    {
+        return;
+    }
+
+    let upstream = match claude_upstream_from_settings(claude_settings_path)
+        .await
+        .and_then(|upstream| {
+            reqwest::Url::parse(&upstream).context("parse auto-discovered Claude upstream")
+        }) {
+        Ok(upstream) => upstream,
+        Err(err) => {
+            warn!(
+                ?err,
+                settings_path = %claude_settings_path.display(),
+                "could not auto-discover Claude profile"
+            );
+            return;
+        }
+    };
+
+    profiles.insert(
+        "claude".to_owned(),
+        ProfileConfig {
+            name: "claude".to_owned(),
+            upstream,
+            supports_websocket: false,
+            home_dir: profile_root.join("claude"),
+        },
+    );
+}
+
+async fn resolve_profile_upstream(
+    file: &ProfileFile,
+    profile_path: &std::path::Path,
+    claude_settings_path: &std::path::Path,
+) -> anyhow::Result<reqwest::Url> {
+    let upstream = match (&file.upstream, &file.upstream_from) {
+        (Some(upstream), None) => upstream.clone(),
+        (None, Some(ProfileUpstreamSource::ClaudeSettings)) => {
+            claude_upstream_from_settings(claude_settings_path).await?
+        }
+        (Some(_), Some(_)) => {
+            anyhow::bail!(
+                "{} must configure only one of 'upstream' or 'upstream_from'",
+                profile_path.display()
+            )
+        }
+        (None, None) => {
+            anyhow::bail!(
+                "{} must configure either 'upstream' or 'upstream_from'",
+                profile_path.display()
+            )
+        }
+    };
+
+    reqwest::Url::parse(&upstream)
+        .with_context(|| format!("parse upstream in {}", profile_path.display()))
+}
+
+async fn claude_upstream_from_settings(path: &std::path::Path) -> anyhow::Result<String> {
+    let raw = fs::read(path)
+        .await
+        .with_context(|| format!("read Claude settings {}", path.display()))?;
+    let settings: ClaudeSettings = serde_json::from_slice(&raw)
+        .with_context(|| format!("parse Claude settings {}", path.display()))?;
+    let upstream = settings
+        .env
+        .anthropic_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_CLAUDE_UPSTREAM);
+    Ok(upstream.to_owned())
+}
+
+#[derive(serde::Deserialize)]
+struct ClaudeSettings {
+    #[serde(default)]
+    env: ClaudeSettingsEnv,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ClaudeSettingsEnv {
+    #[serde(rename = "ANTHROPIC_BASE_URL")]
+    anthropic_base_url: Option<String>,
 }
 
 fn resolve_profile(state: &GatewayState, profile: &str) -> anyhow::Result<AppState> {

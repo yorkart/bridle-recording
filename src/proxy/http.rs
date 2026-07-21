@@ -145,11 +145,13 @@ fn record_streaming_request(body: Body, recording: RecordingContext) -> reqwest:
     ));
 
     let initially_complete = body.is_end_stream();
+    let expected_body_bytes = body.size_hint().exact();
     let mut body = RequestRecordingBody {
         inner: StdMutex::new(Box::pin(body)),
         recording_sender: Some(recording_sender),
         completion_sender: Some(completion_sender),
         request_body_bytes: 0,
+        expected_body_bytes,
         queue_error: None,
     };
     if initially_complete {
@@ -163,6 +165,7 @@ struct RequestRecordingBody {
     recording_sender: Option<mpsc::UnboundedSender<Bytes>>,
     completion_sender: Option<tokio::sync::oneshot::Sender<RequestRecordingCompletion>>,
     request_body_bytes: usize,
+    expected_body_bytes: Option<u64>,
     queue_error: Option<String>,
 }
 
@@ -182,9 +185,9 @@ impl RequestRecordingBody {
 
 impl Drop for RequestRecordingBody {
     fn drop(&mut self) {
-        self.finish(Some(
-            "upstream stopped consuming the request body before it completed".to_owned(),
-        ));
+        let body_error = (self.expected_body_bytes != Some(self.request_body_bytes as u64))
+            .then(|| "upstream stopped consuming the request body before it completed".to_owned());
+        self.finish(body_error);
     }
 }
 
@@ -326,6 +329,26 @@ mod tests {
     use super::*;
     use axum::{routing::get, Router};
     use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn dropping_after_exact_size_does_not_mark_request_body_incomplete() {
+        let (recording_sender, _recording_receiver) = mpsc::unbounded_channel();
+        let (completion_sender, completion_receiver) = tokio::sync::oneshot::channel();
+        let body = RequestRecordingBody {
+            inner: StdMutex::new(Box::pin(Body::empty())),
+            recording_sender: Some(recording_sender),
+            completion_sender: Some(completion_sender),
+            request_body_bytes: 4,
+            expected_body_bytes: Some(4),
+            queue_error: None,
+        };
+
+        drop(body);
+
+        let completion = completion_receiver.await.unwrap();
+        assert!(completion.body_error.is_none());
+        assert_eq!(completion.request_body_bytes, 4);
+    }
 
     #[tokio::test]
     async fn response_recording_finalizes_after_downstream_body_is_dropped() {

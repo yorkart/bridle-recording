@@ -1,6 +1,8 @@
 pub const UNKNOWN_SESSION: &str = "unknown";
 pub const DEFAULT_SESSION_HEADER: &str = "x-codex-session-id";
-pub const FALLBACK_SESSION_HEADERS: &[&str] = &["thread-id", "session-id"];
+pub const FALLBACK_SESSION_HEADERS: &[&str] =
+    &["thread-id", "session-id", "x-claude-code-session-id"];
+pub const DEFAULT_CLAUDE_UPSTREAM: &str = "https://api.anthropic.com";
 pub const CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
 pub const CODEX_TURN_METADATA_FIELDS: &[&str] = &["thread_id", "session_id"];
 pub const HOP_BY_HOP_RESPONSE_HEADERS: &[&str] = &[

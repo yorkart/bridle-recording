@@ -1,5 +1,6 @@
 mod app;
 mod constants;
+mod help;
 mod matcher;
 mod observability;
 mod proxy;

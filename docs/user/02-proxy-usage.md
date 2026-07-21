@@ -1,6 +1,6 @@
 # 代理使用
 
-本页说明如何启动 bridle-recording，并让 Codex 或 OpenAI 兼容客户端通过它访问上游模型服务。
+本页说明如何启动 bridle-recording，并让 Codex、Claude Code 或 OpenAI 兼容客户端通过它访问上游模型服务。
 
 ## 启动 recorder
 
@@ -56,6 +56,22 @@ curl http://127.0.0.1:8787/health
 ok
 ```
 
+## 服务自描述 `/help`
+
+recorder 提供机器可读的帮助接口：
+
+```sh
+curl -s http://127.0.0.1:8787/help | jq .
+```
+
+它相当于 HTTP 服务的 `--help`，返回当前运行实例的 profile、录制与 mock 路径、会话 header 优先级，以及 `list_testsets` 等操作的 JSON Schema。路径均为相对路径，使用方可以基于实际 recorder origin 拼接；返回内容不会暴露 profile 的真实 upstream 或认证信息。
+
+常见发现流程：
+
+1. 请求 `GET /help`，读取 `active_profiles` 和 `operations`。
+2. 从 `operations` 中按 `name` 查找 `record_proxy_request`、`list_testsets` 或 `mock_replay_request`。
+3. 按操作中的 `http` 路径和 `input_schema` / `output_schema` 发起请求。
+
 ## 配置 Codex HTTP 录制
 
 第一次使用时，先把 profile 模板复制到本机运行目录，并复制 Codex 登录态：
@@ -99,6 +115,30 @@ cp ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
 ./scripts/run-codex-websocket.sh
 ```
 
+## 配置 Claude Code 录制
+
+Claude profile 直接复用用户已有的 `~/.claude/settings.json`，不需要复制 profile 或认证令牌。先启动 recorder，再通过专用脚本启动 Claude Code：
+
+```sh
+./scripts/run-recorder.sh
+./scripts/run-claude.sh
+```
+
+这条链路的配置职责如下：
+
+- recorder 启动时自动发现 `~/.claude/settings.json`，从 `env.ANTHROPIC_BASE_URL` 读取真实上游；没有配置时使用 `https://api.anthropic.com`。
+- `run-claude.sh` 仍让 Claude Code 正常加载原始用户 settings，只额外传入一段内存 settings，在当前进程中把 `ANTHROPIC_BASE_URL` 覆盖为 `http://127.0.0.1:8787/claude`。
+- `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 仍由 Claude Code 自己读取并形成认证 header。recorder 不提取或使用该凭据，只原样转发和录制该 header。
+- recorder 使用 Claude Code 自带的 `x-claude-code-session-id` 对录制分组，无需增加自定义 header。
+
+如果 Claude settings 不在默认位置，可以在启动 recorder 时指定：
+
+```sh
+BRIDLE_CLAUDE_SETTINGS_PATH=/path/to/settings.json ./scripts/run-recorder.sh
+```
+
+Claude profile 在 recorder 启动时发现，因此修改 settings 后需要重启 recorder。
+
 ## Profile 路由
 
 recorder 通过路径前缀区分 profile。
@@ -112,6 +152,7 @@ recorder 通过路径前缀区分 profile。
 ```text
 http://127.0.0.1:8787/codex-http
 http://127.0.0.1:8787/codex-websocket
+http://127.0.0.1:8787/claude
 ```
 
 OpenAI Responses API 客户端通常会请求：
@@ -162,6 +203,10 @@ curl http://127.0.0.1:8787/health
 **Codex 请求没有进入 recorder**
 
 确认 `CODEX_HOME` 指向 `~/.bridle-recording/codex-http`，并确认 profile 的 `config.toml` 中 `base_url` 是 recorder 地址。
+
+**Claude Code 请求没有进入 recorder**
+
+确认通过 `./scripts/run-claude.sh` 启动，并访问 `/api/profiles` 检查是否包含 `claude`。如果刚修改 Claude settings，需要重启 recorder。
 
 **请求被系统代理绕走**
 

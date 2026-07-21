@@ -1,0 +1,2 @@
+upstream_from = "claude-settings"
+supports_websocket = false

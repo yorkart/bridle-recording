@@ -2,22 +2,26 @@
 
 This directory contains local home templates for different agents.
 
-Copy the template you want into your local `~/.bridle-recording/` directory,
-then add the corresponding auth file before launching the agent with that home.
+Copy the Codex template you want into your local `~/.bridle-recording/`
+directory and add its corresponding auth file. Claude is auto-discovered from
+the existing user settings; its directory here is an optional reference
+template and does not need to be copied.
 
 Current templates:
 
 - `codex-http`: Codex home for HTTP Responses traffic through bridle-recording
 - `codex-websocket`: Codex home for WebSocket-enabled traffic through bridle-recording
+- `claude`: Claude Code profile using the existing `~/.claude/settings.json`
 
 Each template points at a profile-prefixed base URL on the recorder:
 
 - `codex-http` -> `http://127.0.0.1:8787/codex-http`
 - `codex-websocket` -> `http://127.0.0.1:8787/codex-websocket`
+- `claude` -> `http://127.0.0.1:8787/claude`
 
 Each profile directory also includes a `bridle-profile.toml` file used by the
 recorder server to discover which profiles are available locally, including the
-upstream URL for that profile.
+upstream URL or upstream source for that profile.
 
 Example:
 
@@ -40,4 +44,16 @@ Recorder contract:
 - headers are recorded verbatim, including sensitive headers
 - request and response bodies are recorded in raw form
 
-You can add more agent homes here later, for example `claude/`.
+Additional agent profiles can follow the same directory layout.
+
+Claude example:
+
+```sh
+./scripts/run-recorder.sh
+./scripts/run-claude.sh
+```
+
+The Claude launcher passes the equivalent of `recorder-settings.json` as an
+in-memory additional setting. The original `~/.claude/settings.json` remains
+active and supplies the user's authentication; only the process-local
+`ANTHROPIC_BASE_URL` is overridden.

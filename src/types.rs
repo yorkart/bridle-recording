@@ -207,6 +207,13 @@ pub struct ParsedSseEvent {
 
 #[derive(Deserialize)]
 pub struct ProfileFile {
-    pub upstream: String,
+    pub upstream: Option<String>,
+    pub upstream_from: Option<ProfileUpstreamSource>,
     pub supports_websocket: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileUpstreamSource {
+    ClaudeSettings,
 }

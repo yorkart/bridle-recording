@@ -1,7 +1,7 @@
 # bridle-recording
 
-Records Codex/OpenAI-compatible model traffic and replays it through an
-OpenAI-compatible mock endpoint.
+Records Codex, Claude Code, and model-provider traffic. Recorded OpenAI-compatible
+traffic can also be replayed through an OpenAI-compatible mock endpoint.
 
 ## Start Recorder
 
@@ -35,6 +35,18 @@ cargo run -- \
 
 This starts the recorder on `http://127.0.0.1:8787`.
 
+The running service exposes machine-readable usage information, including its
+active profiles, recording paths, testset discovery schema, and mock replay
+paths:
+
+```sh
+curl -s http://127.0.0.1:8787/help | jq .
+```
+
+`/help` is the HTTP equivalent of CLI `--help`: it returns relative paths so
+clients can resolve them against whichever recorder origin they are using. It
+does not expose configured upstream URLs or credentials.
+
 The recorder contract is:
 
 - fully transparent proxying on the live path
@@ -42,8 +54,9 @@ The recorder contract is:
 - 100% verbatim header recording, including sensitive headers
 - raw request/response body recording without compatibility rewrites
 
-Each configured profile forwards requests to the `upstream` declared in that
-profile's `bridle-profile.toml`.
+Each configured profile forwards requests to the upstream declared in that
+profile's `bridle-profile.toml`. A profile can also resolve its upstream from a
+supported local agent configuration, as the Claude profile does.
 
 Recordings are written under the active profile home, for example
 `~/.bridle-recording/codex-http/recordings`.
@@ -149,6 +162,39 @@ This layout leaves room for other agent homes later, for example:
 Copying `auth.json` keeps your private credentials out of the repository while
 still letting the recorder use the same Codex login state.
 
+## Start Claude Code For Recording
+
+Claude Code can reuse the existing user configuration at
+`~/.claude/settings.json` directly. No Claude profile or credential copy is
+required:
+
+```sh
+./scripts/run-recorder.sh
+./scripts/run-claude.sh
+```
+
+The integration has two independent configuration paths:
+
+- At startup the recorder discovers `~/.claude/settings.json` and reads the real
+  upstream from `env.ANTHROPIC_BASE_URL`. If the setting is absent, it uses
+  `https://api.anthropic.com`.
+- `run-claude.sh` passes an additional in-memory setting that overrides only
+  `ANTHROPIC_BASE_URL`, pointing Claude Code at
+  `http://127.0.0.1:8787/claude` for that process.
+
+Claude Code continues to load the original user settings, including
+`ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`. The resulting `authorization` or
+`x-api-key` request header is forwarded and recorded verbatim; bridle-recording
+does not extract, use, inject, or rewrite the credential. Claude Code's own
+`x-claude-code-session-id` header is used to group recordings into sessions.
+
+If the user settings file is elsewhere, point only the recorder-side lookup at
+it before starting the recorder:
+
+```sh
+BRIDLE_CLAUDE_SETTINGS_PATH=/path/to/settings.json ./scripts/run-recorder.sh
+```
+
 ## Multi-Profile Routing
 
 The recorder exposes one path prefix per agent profile. Today the built-in
@@ -156,6 +202,7 @@ profiles are:
 
 - `/codex-http`
 - `/codex-websocket`
+- `/claude`
 
 Each profile exposes:
 
