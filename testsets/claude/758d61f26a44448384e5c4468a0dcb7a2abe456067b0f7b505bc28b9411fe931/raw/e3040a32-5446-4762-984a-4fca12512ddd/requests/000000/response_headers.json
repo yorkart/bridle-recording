@@ -1,0 +1,142 @@
+[
+  {
+    "name": "date",
+    "value": {
+      "kind": "text",
+      "value": "Tue, 21 Jul 2026 22:49:06 GMT"
+    }
+  },
+  {
+    "name": "content-type",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "transfer-encoding",
+    "value": {
+      "kind": "text",
+      "value": "chunked"
+    }
+  },
+  {
+    "name": "connection",
+    "value": {
+      "kind": "text",
+      "value": "keep-alive"
+    }
+  },
+  {
+    "name": "alt-svc",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "cache-control",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "permissions-policy",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "referrer-policy",
+    "value": {
+      "kind": "text",
+      "value": "strict-origin-when-cross-origin"
+    }
+  },
+  {
+    "name": "strict-transport-security",
+    "value": {
+      "kind": "text",
+      "value": "max-age=31536000; includeSubDomains; preload"
+    }
+  },
+  {
+    "name": "via",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-client-request-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-content-type-options",
+    "value": {
+      "kind": "text",
+      "value": "nosniff"
+    }
+  },
+  {
+    "name": "x-frame-options",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-request-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-xss-protection",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "nel",
+    "value": {
+      "kind": "text",
+      "value": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+    }
+  },
+  {
+    "name": "cf-cache-status",
+    "value": {
+      "kind": "text",
+      "value": "DYNAMIC"
+    }
+  },
+  {
+    "name": "report-to",
+    "value": {
+      "kind": "text",
+      "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=PG4mcEXIvA6EsdgSBgW6%2FHP8qXrD5Oxg%2Fzg1ebKekH4Tb3khUufYxU8jr7k1wkyycnRbZBe6y%2FeTyRHSB1CRTGe2QyXh1Cqv2fo%2BeuHjNpJ%2BIzgNNwwAedAaBgrm0Q%3D%3D\"}]}"
+    }
+  },
+  {
+    "name": "server",
+    "value": {
+      "kind": "text",
+      "value": "cloudflare"
+    }
+  },
+  {
+    "name": "cf-ray",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  }
+]

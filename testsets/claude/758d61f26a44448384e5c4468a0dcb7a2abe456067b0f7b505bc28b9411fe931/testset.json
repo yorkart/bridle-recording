@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "profile": "claude",
+  "source_session_id": "e3040a32-5446-4762-984a-4fca12512ddd",
+  "first_user_input": "ping",
+  "user_inputs": [
+    "ping",
+    "hi"
+  ],
+  "user_input_sha256": "758d61f26a44448384e5c4468a0dcb7a2abe456067b0f7b505bc28b9411fe931",
+  "saved_at": "2026-07-21T23:13:22.210Z",
+  "source_recording_path": "/Users/yorkart/.bridle-recording/claude/recordings/e3040a32-5446-4762-984a-4fca12512ddd",
+  "raw_recording_path": "raw/e3040a32-5446-4762-984a-4fca12512ddd",
+  "export": {
+    "selected_requests": [
+      "000000",
+      "000001"
+    ],
+    "redact_sensitive_headers": true,
+    "sensitive_value_count": 0,
+    "remove": {
+      "tools": false,
+      "skills": false,
+      "apps": false,
+      "plugins": false,
+      "derived_prompt": false
+    }
+  }
+}

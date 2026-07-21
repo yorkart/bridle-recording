@@ -1,0 +1,149 @@
+[
+  {
+    "name": "accept",
+    "value": {
+      "kind": "text",
+      "value": "application/json"
+    }
+  },
+  {
+    "name": "authorization",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "content-type",
+    "value": {
+      "kind": "text",
+      "value": "application/json"
+    }
+  },
+  {
+    "name": "user-agent",
+    "value": {
+      "kind": "text",
+      "value": "claude-cli/2.1.214 (external, cli)"
+    }
+  },
+  {
+    "name": "x-claude-code-session-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-arch",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-lang",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-os",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-package-version",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-retry-count",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-runtime",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-runtime-version",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-stainless-timeout",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "anthropic-beta",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "anthropic-dangerous-direct-browser-access",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "anthropic-version",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-app",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "connection",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "host",
+    "value": {
+      "kind": "text",
+      "value": "127.0.0.1:8787"
+    }
+  },
+  {
+    "name": "accept-encoding",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "content-length",
+    "value": {
+      "kind": "text",
+      "value": "93408"
+    }
+  }
+]

@@ -1,0 +1,156 @@
+[
+  {
+    "name": "date",
+    "value": {
+      "kind": "text",
+      "value": "Tue, 21 Jul 2026 22:52:19 GMT"
+    }
+  },
+  {
+    "name": "content-type",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "transfer-encoding",
+    "value": {
+      "kind": "text",
+      "value": "chunked"
+    }
+  },
+  {
+    "name": "connection",
+    "value": {
+      "kind": "text",
+      "value": "keep-alive"
+    }
+  },
+  {
+    "name": "alt-svc",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "cache-control",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "content-encoding",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "permissions-policy",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "referrer-policy",
+    "value": {
+      "kind": "text",
+      "value": "strict-origin-when-cross-origin"
+    }
+  },
+  {
+    "name": "strict-transport-security",
+    "value": {
+      "kind": "text",
+      "value": "max-age=31536000; includeSubDomains; preload"
+    }
+  },
+  {
+    "name": "vary",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "via",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-client-request-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-content-type-options",
+    "value": {
+      "kind": "text",
+      "value": "nosniff"
+    }
+  },
+  {
+    "name": "x-frame-options",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-request-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-xss-protection",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "nel",
+    "value": {
+      "kind": "text",
+      "value": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+    }
+  },
+  {
+    "name": "cf-cache-status",
+    "value": {
+      "kind": "text",
+      "value": "DYNAMIC"
+    }
+  },
+  {
+    "name": "report-to",
+    "value": {
+      "kind": "text",
+      "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=IAQTRx8hYgj9LdYHJUbD57t9GDaBtFIyTsU37a6yhnSgx0AmplNwxL202BseAwDtyM10aUeG48o2F8P1TuokwfAQMTPZTVv11rU3qHI34uHorPmVmMrhggZt5NJQGA%3D%3D\"}]}"
+    }
+  },
+  {
+    "name": "server",
+    "value": {
+      "kind": "text",
+      "value": "cloudflare"
+    }
+  },
+  {
+    "name": "cf-ray",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  }
+]

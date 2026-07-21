@@ -1,0 +1,12 @@
+{
+  "created_at": "2026-07-21T22:49:02.500Z",
+  "recorder": {
+    "profile": "claude",
+    "session_header": "x-codex-session-id",
+    "upstream_base_url": "https://apipool.dev/",
+    "version": "0.1.0"
+  },
+  "request_count": 2,
+  "session_id": "e3040a32-5446-4762-984a-4fca12512ddd",
+  "updated_at": "2026-07-21T22:52:16.934Z"
+}

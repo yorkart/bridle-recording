@@ -1,0 +1,15 @@
+{
+  "index": 1,
+  "method": "POST",
+  "path": "/v1/messages",
+  "query": "beta=true",
+  "request_body_bytes": 93593,
+  "session_id": "e3040a32-5446-4762-984a-4fca12512ddd",
+  "session_source": {
+    "header": {
+      "name": "x-claude-code-session-id"
+    }
+  },
+  "started_at": "2026-07-21T22:52:16.932Z",
+  "upstream_url": "https://apipool.dev/v1/messages?beta=true"
+}
