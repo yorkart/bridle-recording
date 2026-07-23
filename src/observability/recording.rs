@@ -74,11 +74,13 @@ pub(super) async fn session_inner(
     let provider = ObservabilityProvider::from_profile(profile);
     let requests = load_observed_calls(&session_dir, provider).await?;
     let turns = provider.build_turns(&requests);
+    let flows = provider.build_flows(&requests, &turns);
     Ok(ObservedSession {
         profile: profile.to_owned(),
         session_id: session_id.to_owned(),
         raw_root: session_dir.display().to_string(),
         manifest,
+        flows,
         turns,
         requests,
     })

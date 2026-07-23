@@ -355,6 +355,33 @@ pub(super) fn build_conversation_turns(calls: &[ObservedCall]) -> Vec<ObservedTu
     turns
 }
 
+pub(super) fn build_main_flow(turns: &[ObservedTurn]) -> ObservedFlow {
+    let started_at = turns
+        .first()
+        .map(|turn| turn.started_at.clone())
+        .unwrap_or_default();
+    let completed_at = turns
+        .iter()
+        .flat_map(|turn| turn.calls.iter())
+        .filter(|call| !call.completed_at.is_empty())
+        .map(|call| call.completed_at.as_str())
+        .max()
+        .unwrap_or_default()
+        .to_owned();
+    let request_count = turns.iter().map(|turn| turn.calls.len()).sum();
+    ObservedFlow {
+        id: "main".to_owned(),
+        role: ObservedFlowRole::Main,
+        kind: ObservedRequestKind::Conversation,
+        label: "User conversation".to_owned(),
+        started_at,
+        completed_at,
+        request_count,
+        relation: None,
+        turns: turns.to_vec(),
+    }
+}
+
 pub(super) fn content_text(value: Option<&serde_json::Value>) -> String {
     match value {
         Some(serde_json::Value::String(text)) => text.clone(),

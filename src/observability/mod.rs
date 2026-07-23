@@ -119,6 +119,13 @@ impl ObservabilityProvider {
             Self::Generic => build_conversation_turns(calls),
         }
     }
+
+    fn build_flows(self, calls: &[ObservedCall], main_turns: &[ObservedTurn]) -> Vec<ObservedFlow> {
+        match self {
+            Self::Claude => claude::build_flows(calls, main_turns),
+            Self::Codex | Self::Generic => vec![build_main_flow(main_turns)],
+        }
+    }
 }
 
 enum SaveTestsetError {
@@ -320,8 +327,46 @@ struct ObservedSession {
     session_id: String,
     raw_root: String,
     manifest: serde_json::Value,
+    flows: Vec<ObservedFlow>,
     turns: Vec<ObservedTurn>,
     requests: Vec<ObservedCall>,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedFlow {
+    id: String,
+    role: ObservedFlowRole,
+    kind: ObservedRequestKind,
+    label: String,
+    started_at: String,
+    completed_at: String,
+    request_count: usize,
+    relation: Option<ObservedFlowRelation>,
+    turns: Vec<ObservedTurn>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ObservedFlowRole {
+    Main,
+    Agent,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedFlowRelation {
+    main_turn_id: String,
+    timing: ObservedFlowTiming,
+    anchor_call_index: Option<String>,
+    overlaps_main: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ObservedFlowTiming {
+    TurnStart,
+    DuringCall,
+    BetweenCalls,
+    AfterTurn,
 }
 
 #[derive(Clone, Serialize)]
