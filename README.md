@@ -90,9 +90,9 @@ Create a local config directory, copy one of the templates, and copy your
 existing Codex auth state into it:
 
 ```sh
-mkdir -p ~/.bridle-recording
+install -d -m 700 ~/.bridle-recording
 cp -R agent-home/codex-http ~/.bridle-recording/
-cp ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
+install -m 600 ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
 ```
 
 Then start Codex with that agent home:
@@ -129,9 +129,9 @@ If you want the WebSocket-enabled variant instead, copy
 `agent-home/codex-websocket/` the same way:
 
 ```sh
-mkdir -p ~/.bridle-recording
+install -d -m 700 ~/.bridle-recording
 cp -R agent-home/codex-websocket ~/.bridle-recording/
-cp ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
+install -m 600 ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
 
 ./scripts/run-codex-websocket.sh
 ```

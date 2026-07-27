@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -12,7 +12,6 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Url;
 use tokio::{
-    fs::{self, File},
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
@@ -31,8 +30,9 @@ use tokio_tungstenite::{
 
 use crate::{
     recording::{
-        headers_to_records, recording_failure, write_bytes_file, write_json_file, write_manifest,
-        write_websocket_meta, RecordingContext, RECORDING_QUEUE_CAPACITY,
+        create_private_dir_all, create_private_file, headers_to_records, recording_failure,
+        write_bytes_file, write_json_file, write_manifest, write_websocket_meta, RecordingContext,
+        RECORDING_QUEUE_CAPACITY,
     },
     types::{
         AppState, RequestMeta, WebSocketCloseRecord, WebSocketDirection, WebSocketFrameRecord,
@@ -536,7 +536,7 @@ async fn record_websocket_frames_in_background(
         return;
     };
     let path = request_dir.join("websocket_frames.jsonl");
-    let mut file = match File::create(&path).await {
+    let mut file = match create_private_file(&path).await {
         Ok(file) => file,
         Err(err) => {
             recording_failure(Some(&request_dir), "websocket_frames_create", &err).await;
@@ -624,13 +624,13 @@ fn record_websocket_meta_in_background(recording: RecordingContext, meta: WebSoc
 }
 
 async fn create_websocket_recording(
-    request_dir: &PathBuf,
+    request_dir: &Path,
     state: &AppState,
     request_meta: RequestMeta,
     session_id: &str,
     headers: &HeaderMap,
 ) -> anyhow::Result<Option<PathBuf>> {
-    fs::create_dir_all(request_dir)
+    create_private_dir_all(request_dir)
         .await
         .with_context(|| format!("create request dir {}", request_dir.display()))?;
     write_json_file(request_dir.join("request_meta.json"), &request_meta).await?;
@@ -641,7 +641,7 @@ async fn create_websocket_recording(
     .await?;
     write_bytes_file(request_dir.join("request_body.raw"), b"").await?;
     write_manifest(state, session_id).await?;
-    Ok(Some(request_dir.clone()))
+    Ok(Some(request_dir.to_path_buf()))
 }
 
 fn axum_to_tungstenite_message(message: AxumWsMessage) -> TungsteniteMessage {

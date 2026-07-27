@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Mutex as StdMutex,
     task::{Context as TaskContext, Poll},
@@ -15,17 +15,14 @@ use axum::{
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http_body::{Body as HttpBody, Frame, SizeHint};
-use tokio::{
-    fs::{self, File},
-    io::AsyncWriteExt,
-    sync::mpsc,
-};
+use tokio::{fs, io::AsyncWriteExt, sync::mpsc};
 use tracing::warn;
 
 use crate::{
     recording::{
-        headers_to_records, recording_failure, write_error_response_meta, write_json_file,
-        write_manifest, RecordingContext, RECORDING_QUEUE_CAPACITY,
+        create_private_dir_all, create_private_file, headers_to_records, recording_failure,
+        write_error_response_meta, write_json_file, write_manifest, RecordingContext,
+        RECORDING_QUEUE_CAPACITY,
     },
     types::{AppState, RequestMeta, ResponseMeta},
     util::{
@@ -267,7 +264,7 @@ async fn record_request_in_background(
         return;
     };
     let raw_path = request_dir.join("request_body.raw");
-    let mut raw_file = match File::create(&raw_path).await {
+    let mut raw_file = match create_private_file(&raw_path).await {
         Ok(file) => Some(file),
         Err(err) => {
             recording_failure(Some(&request_dir), "http_request_body_create", &err).await;
@@ -692,7 +689,7 @@ async fn record_response_in_background(
         return;
     };
     let raw_path = request_dir.join(recording_name);
-    let mut raw_file = match File::create(&raw_path).await {
+    let mut raw_file = match create_private_file(&raw_path).await {
         Ok(file) => Some(file),
         Err(err) => {
             recording_failure(Some(&request_dir), "http_response_body_create", &err).await;
@@ -802,12 +799,12 @@ fn record_error_response_in_background(
 
 async fn create_http_recording(
     state: &AppState,
-    request_dir: &PathBuf,
+    request_dir: &Path,
     request_meta: RequestMeta,
     headers: &HeaderMap,
     session_id: &str,
 ) -> anyhow::Result<Option<PathBuf>> {
-    fs::create_dir_all(request_dir)
+    create_private_dir_all(request_dir)
         .await
         .with_context(|| format!("create request dir {}", request_dir.display()))?;
     write_json_file(request_dir.join("request_meta.json"), &request_meta).await?;
@@ -817,5 +814,5 @@ async fn create_http_recording(
     )
     .await?;
     write_manifest(state, session_id).await?;
-    Ok(Some(request_dir.clone()))
+    Ok(Some(request_dir.to_path_buf()))
 }

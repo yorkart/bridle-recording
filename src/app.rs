@@ -21,7 +21,7 @@ use crate::{
         replay::handle_mock_proxy,
         websocket::{prepare_websocket_proxy, run_websocket_proxy},
     },
-    recording::append_access_log_line,
+    recording::{append_access_log_line, create_private_dir_all},
     types::{AppState, Args, GatewayState, ProfileConfig, ProfileFile, ProfileUpstreamSource},
 };
 
@@ -48,11 +48,11 @@ pub async fn run() -> anyhow::Result<()> {
     let repo_root = std::env::current_dir().context("resolve current git repository root")?;
     let profile_root = default_profile_root();
     let access_log_path = profile_root.join("access.log");
-    let profiles = load_profiles(&profile_root).await?;
 
-    fs::create_dir_all(&profile_root)
+    create_private_dir_all(&profile_root)
         .await
-        .with_context(|| format!("create profile root {}", profile_root.display()))?;
+        .with_context(|| format!("secure profile root {}", profile_root.display()))?;
+    let profiles = load_profiles(&profile_root).await?;
 
     let state = GatewayState {
         client,

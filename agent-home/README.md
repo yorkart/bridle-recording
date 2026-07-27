@@ -26,9 +26,9 @@ upstream URL or upstream source for that profile.
 Example:
 
 ```sh
-mkdir -p ~/.bridle-recording
+install -d -m 700 ~/.bridle-recording
 cp -R agent-home/codex-http ~/.bridle-recording/
-cp ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
+install -m 600 ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
 
 ./scripts/run-recorder.sh
 

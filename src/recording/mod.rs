@@ -1,8 +1,9 @@
 mod filesystem;
 
 pub use filesystem::{
-    append_access_log_line, headers_to_records, recording_failure, write_bytes_file,
-    write_error_response_meta, write_json_file, write_manifest, write_websocket_meta,
+    append_access_log_line, create_private_dir_all, create_private_file, headers_to_records,
+    recording_failure, write_bytes_file, write_error_response_meta, write_json_file,
+    write_manifest, write_websocket_meta,
 };
 
 use std::{future::Future, path::PathBuf};

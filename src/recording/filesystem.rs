@@ -3,6 +3,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use anyhow::{anyhow, Context};
 use axum::http::{HeaderMap, HeaderValue};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -19,18 +22,72 @@ use crate::{
     util::now_rfc3339,
 };
 
+#[cfg(unix)]
+const PRIVATE_DIR_MODE: u32 = 0o700;
+#[cfg(unix)]
+const PRIVATE_FILE_MODE: u32 = 0o600;
+
+pub async fn create_private_dir_all(path: &Path) -> anyhow::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(PRIVATE_DIR_MODE);
+    builder
+        .create(path)
+        .await
+        .with_context(|| format!("create private dir {}", path.display()))?;
+
+    #[cfg(unix)]
+    fs::set_permissions(path, std::fs::Permissions::from_mode(PRIVATE_DIR_MODE))
+        .await
+        .with_context(|| format!("set private dir permissions on {}", path.display()))?;
+
+    Ok(())
+}
+
+pub async fn create_private_file(path: &Path) -> anyhow::Result<File> {
+    if let Some(parent) = path.parent() {
+        create_private_dir_all(parent).await?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(PRIVATE_FILE_MODE);
+    let file = options
+        .open(path)
+        .await
+        .with_context(|| format!("create private file {}", path.display()))?;
+    set_private_file_permissions(&file, path).await?;
+    Ok(file)
+}
+
+async fn set_private_file_permissions(file: &File, path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    file.set_permissions(std::fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+        .await
+        .with_context(|| format!("set private file permissions on {}", path.display()))?;
+
+    #[cfg(not(unix))]
+    let _ = (file, path);
+
+    Ok(())
+}
+
 pub async fn append_access_log_line(path: &Path, line: &str) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        create_private_dir_all(parent)
             .await
             .with_context(|| format!("create access log dir {}", parent.display()))?;
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(PRIVATE_FILE_MODE);
+    let mut file = options
         .open(path)
         .await
         .with_context(|| format!("open access log {}", path.display()))?;
+    set_private_file_permissions(&file, path).await?;
     file.write_all(line.as_bytes())
         .await
         .with_context(|| format!("append access log {}", path.display()))?;
@@ -83,9 +140,7 @@ impl PendingAtomicFile {
         let parent = final_path
             .parent()
             .ok_or_else(|| anyhow!("atomic file path has no parent: {}", final_path.display()))?;
-        fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create parent dir {}", parent.display()))?;
+        create_private_dir_all(parent).await?;
 
         let file_name = final_path
             .file_name()
@@ -95,13 +150,13 @@ impl PendingAtomicFile {
             let id = ATOMIC_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let temporary_path =
                 parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), id));
-            match OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&temporary_path)
-                .await
-            {
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            options.mode(PRIVATE_FILE_MODE);
+            match options.open(&temporary_path).await {
                 Ok(file) => {
+                    set_private_file_permissions(&file, &temporary_path).await?;
                     return Ok(Self {
                         final_path,
                         temporary_path,
@@ -156,14 +211,7 @@ impl Drop for PendingAtomicFile {
 }
 
 pub async fn write_bytes_file(path: PathBuf, bytes: &[u8]) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create parent dir {}", parent.display()))?;
-    }
-    let mut file = File::create(&path)
-        .await
-        .with_context(|| format!("create {}", path.display()))?;
+    let mut file = create_private_file(&path).await?;
     file.write_all(bytes)
         .await
         .with_context(|| format!("write {}", path.display()))?;
@@ -208,6 +256,55 @@ mod tests {
         assert_eq!(value["status"], 200);
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recording_paths_are_owner_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let recording_dir = temp
+            .path()
+            .join("profile/recordings/session/requests/000000");
+        create_private_dir_all(&recording_dir).await.unwrap();
+
+        let header_path = recording_dir.join("request_headers.json");
+        std::fs::write(&header_path, b"old headers\n").unwrap();
+        std::fs::set_permissions(&header_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_json_file(
+            header_path.clone(),
+            &serde_json::json!({"authorization": "secret"}),
+        )
+        .await
+        .unwrap();
+
+        let body_path = recording_dir.join("request_body.raw");
+        std::fs::write(&body_path, b"old body").unwrap();
+        std::fs::set_permissions(&body_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_bytes_file(body_path.clone(), b"new body")
+            .await
+            .unwrap();
+
+        let access_log_path = temp.path().join("profile/access.log");
+        std::fs::write(&access_log_path, b"old log\n").unwrap();
+        std::fs::set_permissions(&access_log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        append_access_log_line(&access_log_path, "new log\n")
+            .await
+            .unwrap();
+
+        let mut path = recording_dir.as_path();
+        while path != temp.path() {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                PRIVATE_DIR_MODE
+            );
+            path = path.parent().unwrap();
+        }
+        for path in [header_path, body_path, access_log_path] {
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                PRIVATE_FILE_MODE
+            );
+        }
+    }
 }
 
 pub async fn write_error_response_meta(
@@ -228,7 +325,7 @@ pub async fn write_error_response_meta(
 
 pub async fn write_manifest(state: &AppState, session_id: &str) -> anyhow::Result<()> {
     let session_dir = state.output_dir.join(session_id);
-    fs::create_dir_all(&session_dir)
+    create_private_dir_all(&session_dir)
         .await
         .with_context(|| format!("create session dir {}", session_dir.display()))?;
     let request_count = {

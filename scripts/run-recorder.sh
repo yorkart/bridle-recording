@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 077
 
 export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:7890}"
 export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:7890}"
