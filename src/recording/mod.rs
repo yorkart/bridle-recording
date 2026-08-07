@@ -18,7 +18,6 @@ enum RecordingSetupState {
     Ready(Option<PathBuf>),
 }
 
-/// A recording-only dependency that may be awaited by background writers but never by proxy I/O.
 #[derive(Clone)]
 pub struct RecordingContext {
     setup: watch::Receiver<RecordingSetupState>,

@@ -1,0 +1,65 @@
+[
+  {
+    "name": "authorization",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "chatgpt-account-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "originator",
+    "value": {
+      "kind": "text",
+      "value": "codex_cli_rs"
+    }
+  },
+  {
+    "name": "session-id",
+    "value": {
+      "kind": "text",
+      "value": "58b5460a-b296-4999-a0db-8eddf570d2fc"
+    }
+  },
+  {
+    "name": "thread-id",
+    "value": {
+      "kind": "text",
+      "value": "58b5460a-b296-4999-a0db-8eddf570d2fc"
+    }
+  },
+  {
+    "name": "content-type",
+    "value": {
+      "kind": "text",
+      "value": "application/json"
+    }
+  },
+  {
+    "name": "accept",
+    "value": {
+      "kind": "text",
+      "value": "*/*"
+    }
+  },
+  {
+    "name": "host",
+    "value": {
+      "kind": "text",
+      "value": "127.0.0.1:8788"
+    }
+  },
+  {
+    "name": "content-length",
+    "value": {
+      "kind": "text",
+      "value": "32063"
+    }
+  }
+]

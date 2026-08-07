@@ -1,0 +1,15 @@
+{
+  "index": 2,
+  "method": "POST",
+  "path": "/responses",
+  "query": null,
+  "request_body_bytes": 32063,
+  "session_id": "58b5460a-b296-4999-a0db-8eddf570d2fc",
+  "session_source": {
+    "header": {
+      "name": "thread-id"
+    }
+  },
+  "started_at": "2026-07-26T22:47:57.796Z",
+  "upstream_url": "https://chatgpt.com/backend-api/codex/responses"
+}

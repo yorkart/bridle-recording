@@ -1,0 +1,275 @@
+[
+  {
+    "name": "date",
+    "value": {
+      "kind": "text",
+      "value": "Sun, 26 Jul 2026 22:47:56 GMT"
+    }
+  },
+  {
+    "name": "transfer-encoding",
+    "value": {
+      "kind": "text",
+      "value": "chunked"
+    }
+  },
+  {
+    "name": "connection",
+    "value": {
+      "kind": "text",
+      "value": "keep-alive"
+    }
+  },
+  {
+    "name": "server",
+    "value": {
+      "kind": "text",
+      "value": "cloudflare"
+    }
+  },
+  {
+    "name": "x-codex-active-limit",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-plan-type",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-primary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-secondary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-primary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-primary-over-secondary-limit-percent",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-secondary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-primary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-secondary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-primary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-secondary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-credits-has-credits",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-credits-balance",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-credits-unlimited",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-used-percent",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-over-secondary-limit-percent",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-window-minutes",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-reset-after-seconds",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-primary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-secondary-reset-at",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-bengalfox-limit-name",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-oai-request-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-openai-proxy-wasm",
+    "value": {
+      "kind": "text",
+      "value": "v0.1"
+    }
+  },
+  {
+    "name": "cf-cache-status",
+    "value": {
+      "kind": "text",
+      "value": "DYNAMIC"
+    }
+  },
+  {
+    "name": "cross-origin-opener-policy",
+    "value": {
+      "kind": "text",
+      "value": "same-origin-allow-popups"
+    }
+  },
+  {
+    "name": "strict-transport-security",
+    "value": {
+      "kind": "text",
+      "value": "max-age=31536000; includeSubDomains; preload"
+    }
+  },
+  {
+    "name": "x-content-type-options",
+    "value": {
+      "kind": "text",
+      "value": "nosniff"
+    }
+  },
+  {
+    "name": "set-cookie",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "report-to",
+    "value": {
+      "kind": "text",
+      "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=AFvqdOYAeXz1aBeWtAVUr92tnl%2BiDdmU7KFkgCDDHef4CsfmUSgaOexIroxeU9O1b0p5EFZLTYjbC%2BUVrJEWmyar7zTnxS8LyiREefAZRpG0YCTl5pGF%2FfUX9MmG\"}]}"
+    }
+  },
+  {
+    "name": "nel",
+    "value": {
+      "kind": "text",
+      "value": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.01,\"max_age\":604800}"
+    }
+  },
+  {
+    "name": "referrer-policy",
+    "value": {
+      "kind": "text",
+      "value": "strict-origin-when-cross-origin"
+    }
+  },
+  {
+    "name": "cf-ray",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  }
+]

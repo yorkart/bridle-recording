@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "profile": "bridle-v2-codex-http",
+  "source_session_id": "58b5460a-b296-4999-a0db-8eddf570d2fc",
+  "first_user_input": "list files",
+  "user_inputs": [
+    "list files",
+    "hi"
+  ],
+  "user_input_sha256": "ea3cdaacff6a7a4270ec9b69415b2793db6e67978602b59f5588e620d621ef67",
+  "saved_at": "2026-07-26T22:48:33.201Z",
+  "source_recording_path": "/private/tmp/bridle-v2-recording-019f93c6/bridle-v2-codex-http/recordings/58b5460a-b296-4999-a0db-8eddf570d2fc",
+  "raw_recording_path": "raw/58b5460a-b296-4999-a0db-8eddf570d2fc",
+  "export": {
+    "selected_requests": [
+      "000000",
+      "000001",
+      "000002"
+    ],
+    "redact_sensitive_headers": true,
+    "sensitive_value_count": 0,
+    "remove": {
+      "tools": false,
+      "skills": false,
+      "apps": false,
+      "plugins": false,
+      "derived_prompt": false
+    }
+  }
+}
