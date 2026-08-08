@@ -291,6 +291,7 @@ fn canonical_request(
             "reasoning",
             "text",
             "instructions",
+            "tools",
         ] {
             if let Some(value) = body.get(field) {
                 canonical_body.insert(field.to_owned(), canonicalize_json(value));
@@ -313,15 +314,23 @@ fn canonicalize_input(value: &serde_json::Value) -> serde_json::Value {
         items
             .iter()
             .map(|item| {
-                let mut out = serde_json::Map::new();
-                for field in ["role", "type", "content"] {
-                    if let Some(value) = item.get(field) {
-                        if field == "content" {
-                            if let Some(value) = canonicalize_input_content(value) {
-                                out.insert(field.to_owned(), value);
-                            }
-                        } else {
-                            out.insert(field.to_owned(), canonicalize_json(value));
+                let mut out = match canonicalize_json(item) {
+                    serde_json::Value::Object(map) => map,
+                    other => return other,
+                };
+                if out
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|item_type| item_type == "message")
+                {
+                    out.retain(|field, _| !field.contains("metadata"));
+                }
+                if let Some(content) = out.get_mut("content") {
+                    let canonical_content = canonicalize_input_content(content);
+                    match canonical_content {
+                        Some(canonical_content) => *content = canonical_content,
+                        None => {
+                            out.remove("content");
                         }
                     }
                 }
@@ -339,11 +348,7 @@ fn canonicalize_input_content(value: &serde_json::Value) -> Option<serde_json::V
                 .filter(|part| !is_ignored_input_content_part(part))
                 .map(canonicalize_input_content_part)
                 .collect::<Vec<_>>();
-            if filtered.is_empty() {
-                None
-            } else {
-                Some(serde_json::Value::Array(filtered))
-            }
+            (!filtered.is_empty()).then_some(serde_json::Value::Array(filtered))
         }
         serde_json::Value::String(text) if is_ignored_input_text(text) => None,
         other => Some(canonicalize_json(other)),

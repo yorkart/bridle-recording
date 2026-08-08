@@ -259,7 +259,7 @@ fn does_not_forward_hop_by_hop_response_headers() {
 }
 
 #[test]
-fn whitelist_match_ignores_dynamic_codex_metadata() {
+fn matcher_ignores_message_metadata() {
     let method = Method::POST;
     let body_a = Bytes::from_static(
         br#"{
@@ -299,7 +299,7 @@ fn whitelist_match_ignores_dynamic_codex_metadata() {
 }
 
 #[test]
-fn whitelist_match_ignores_skill_capability_surface() {
+fn matcher_ignores_skill_app_and_plugin_instructions() {
     let recorded_with_skills = Bytes::from_static(
         br#"{
             "model":"gpt-5.5",
@@ -332,7 +332,8 @@ fn whitelist_match_ignores_skill_capability_surface() {
                 "role":"user",
                 "type":"message",
                 "content":[{"type":"input_text","text":"good morning"}]
-            }]
+            }],
+            "tools":[{"type":"function","name":"skill_tool","description":"from skill","parameters":{"type":"object"}}]
         }"#,
     );
 
@@ -354,7 +355,7 @@ fn whitelist_match_ignores_skill_capability_surface() {
     .unwrap();
 
     assert_eq!(recorded_match.hash, first_agent_match.hash);
-    assert!(recorded_match.canonical.pointer("/body/tools").is_none());
+    assert!(recorded_match.canonical.pointer("/body/tools").is_some());
     let content = recorded_match
         .canonical
         .pointer("/body/input/0/content")
@@ -368,6 +369,50 @@ fn whitelist_match_ignores_skill_capability_surface() {
             .and_then(serde_json::Value::as_str),
         Some("stable developer instruction")
     );
+}
+
+#[test]
+fn matcher_distinguishes_tool_and_function_call_details() {
+    let base = r#"{
+        "model":"gpt-5.5",
+        "tools":[{"type":"function","name":"search","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}],
+        "input":[
+            {"type":"function_call","call_id":"call-1","name":"search","arguments":"{\"query\":\"one\"}"},
+            {"type":"function_call_output","call_id":"call-1","output":"first result"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}],"internal_chat_message_metadata_passthrough":{"phase":"one"}}
+        ]
+    }"#;
+    let variants = [
+        base.replace("\\\"query\\\":\\\"one\\\"", "\\\"query\\\":\\\"two\\\""),
+        base.replace("call-1", "call-2"),
+        base.replace("first result", "second result"),
+        base.replace(
+            "\"query\":{\"type\":\"string\"}",
+            "\"query\":{\"type\":\"number\"}",
+        ),
+    ];
+    let hash = build_request_match(
+        &Method::POST,
+        "responses",
+        None,
+        &HeaderMap::new(),
+        &Bytes::from(base),
+    )
+    .unwrap()
+    .hash;
+
+    for variant in variants {
+        let variant_hash = build_request_match(
+            &Method::POST,
+            "responses",
+            None,
+            &HeaderMap::new(),
+            &Bytes::from(variant),
+        )
+        .unwrap()
+        .hash;
+        assert_ne!(hash, variant_hash);
+    }
 }
 
 #[test]

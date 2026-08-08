@@ -15,7 +15,7 @@ pub const HOP_BY_HOP_RESPONSE_HEADERS: &[&str] = &[
     "transfer-encoding",
     "upgrade",
 ];
-pub const MATCHER_VERSION: u32 = 2;
+pub const MATCHER_VERSION: u32 = 3;
 pub const IGNORED_INPUT_TEXT_PREFIXES: &[&str] = &[
     "<skills_instructions>",
     "<apps_instructions>",
