@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "profile": "codex-apipool-http",
+  "source_session_id": "019fe061-9200-72b2-b376-393e16b44a7a",
+  "first_user_input": "生成1个test-1.txt 空测试文件",
+  "user_inputs": [
+    "生成1个test-1.txt 空测试文件"
+  ],
+  "user_input_sha256": "9c4ffa29799858a246627e0cf22fc1d3ac42296a5ce89efd36ac4f71ae522dd9",
+  "saved_at": "2026-08-08T08:07:14.069Z",
+  "source_recording_path": "/Users/yorkart/.bridle-recording/codex-apipool-http/recordings/019fe061-9200-72b2-b376-393e16b44a7a",
+  "raw_recording_path": "raw/019fe061-9200-72b2-b376-393e16b44a7a",
+  "export": {
+    "selected_requests": [
+      "000000",
+      "000001",
+      "000002"
+    ],
+    "redact_sensitive_headers": true,
+    "sensitive_value_count": 0,
+    "remove": {
+      "tools": false,
+      "skills": false,
+      "apps": false,
+      "plugins": false,
+      "derived_prompt": false
+    }
+  }
+}

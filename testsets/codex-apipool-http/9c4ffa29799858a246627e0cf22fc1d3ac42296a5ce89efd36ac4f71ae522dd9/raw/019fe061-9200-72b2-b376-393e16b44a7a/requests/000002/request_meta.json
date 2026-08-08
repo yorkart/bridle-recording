@@ -1,0 +1,15 @@
+{
+  "index": 2,
+  "method": "POST",
+  "path": "/responses",
+  "query": null,
+  "request_body_bytes": 64946,
+  "session_id": "019fe061-9200-72b2-b376-393e16b44a7a",
+  "session_source": {
+    "header": {
+      "name": "thread-id"
+    }
+  },
+  "started_at": "2026-08-08T07:59:35.437Z",
+  "upstream_url": "https://apipool.dev/responses"
+}
