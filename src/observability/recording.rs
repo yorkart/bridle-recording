@@ -86,6 +86,128 @@ pub(super) async fn session_inner(
     })
 }
 
+pub(super) async fn session_overview_inner(
+    state: &GatewayState,
+    profile: &str,
+    session_id: &str,
+) -> anyhow::Result<ObservedSessionOverview> {
+    let profile_config = state
+        .profiles
+        .get(profile)
+        .with_context(|| format!("unknown profile: {profile}"))?;
+    let session_dir = profile_config.home_dir.join("recordings").join(session_id);
+    let manifest = read_json::<serde_json::Value>(&session_dir.join("manifest.json"))
+        .await
+        .with_context(|| format!("load session manifest {}", session_dir.display()))?;
+    let provider = ObservabilityProvider::from_profile(profile);
+    let requests = load_observed_calls(&session_dir, provider).await?;
+    let turns = provider.build_turns(&requests);
+    let flows = provider.build_flows(&requests, &turns);
+    Ok(ObservedSessionOverview {
+        profile: profile.to_owned(),
+        session_id: session_id.to_owned(),
+        raw_root: session_dir.display().to_string(),
+        manifest,
+        flows: flows.iter().map(ObservedFlowSummary::from).collect(),
+        turns: turns.iter().map(ObservedTurnSummary::from).collect(),
+        requests: requests.iter().map(ObservedCallSummary::from).collect(),
+    })
+}
+
+pub(super) async fn request_detail_inner(
+    state: &GatewayState,
+    profile: &str,
+    session_id: &str,
+    index: &str,
+) -> anyhow::Result<ObservedCall> {
+    if index.is_empty() || !index.chars().all(|character| character.is_ascii_digit()) {
+        anyhow::bail!("invalid request index: {index}");
+    }
+    let profile_config = state
+        .profiles
+        .get(profile)
+        .with_context(|| format!("unknown profile: {profile}"))?;
+    let session_dir = profile_config.home_dir.join("recordings").join(session_id);
+    let requests_dir = session_dir.join("requests");
+    let request_dir = requests_dir.join(index);
+    let provider = ObservabilityProvider::from_profile(profile);
+    let mut call = load_observed_call(index.to_owned(), request_dir, provider).await?;
+
+    let mut needed = call
+        .function_calls
+        .iter()
+        .chain(call.previous_function_calls.iter())
+        .filter(|tool_call| !tool_call.call_id.is_empty())
+        .map(|tool_call| (tool_call.call_id.clone(), ()))
+        .collect::<HashMap<_, _>>();
+    if !needed.is_empty() {
+        let mut results = call
+            .previous_tool_outputs
+            .iter()
+            .filter(|output| !output.call_id.is_empty())
+            .map(|output| (output.call_id.clone(), output.output.clone()))
+            .collect::<HashMap<_, _>>();
+        scan_session_tool_results(&requests_dir, index, &mut results, &mut needed).await?;
+        for tool_call in call
+            .function_calls
+            .iter_mut()
+            .chain(call.previous_function_calls.iter_mut())
+        {
+            if let Some(output) = results.get(&tool_call.call_id) {
+                tool_call.result = Some(output.clone());
+            }
+        }
+    }
+    Ok(call)
+}
+
+/// Resolve tool call results from other recorded request bodies without loading
+/// their full observed calls. Stops early once every needed call id is found.
+async fn scan_session_tool_results(
+    requests_dir: &Path,
+    exclude_index: &str,
+    results: &mut HashMap<String, String>,
+    needed: &mut HashMap<String, ()>,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(requests_dir)
+        .await
+        .with_context(|| format!("read {}", requests_dir.display()))?;
+    let mut request_dirs = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_type().await?.is_dir() {
+            request_dirs.push(entry.path());
+        }
+    }
+    request_dirs.sort();
+
+    for request_dir in request_dirs {
+        if request_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            == Some(exclude_index)
+        {
+            continue;
+        }
+        let body = match fs::read(request_dir.join("request_body.raw")).await {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let Ok(value) = decode_request_body_json(&body) else {
+            continue;
+        };
+        for output in previous_tool_outputs(&value) {
+            if needed.contains_key(&output.call_id) {
+                results.insert(output.call_id.clone(), output.output.clone());
+                needed.remove(&output.call_id);
+            }
+        }
+        if needed.is_empty() {
+            break;
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn load_observed_calls(
     session_dir: &Path,
     provider: ObservabilityProvider,

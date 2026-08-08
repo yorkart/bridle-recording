@@ -34,7 +34,8 @@ mod testset;
 mod ui;
 
 pub use api::{
-    preview_testset, profile_testsets, profiles, save_testset, session, sessions, testsets,
+    preview_testset, profile_testsets, profiles, request_detail, save_testset, session, sessions,
+    testsets,
 };
 pub use ui::ui;
 
@@ -420,6 +421,161 @@ struct ObservedCall {
     raw_dir: String,
     request_body_bytes: usize,
     response_body_bytes: usize,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedCallSummary {
+    index: String,
+    request_id: String,
+    started_at: String,
+    completed_at: String,
+    duration_ms: Option<i64>,
+    method: String,
+    path: String,
+    status: u16,
+    protocol: String,
+    request_kind: ObservedRequestKind,
+    recording_state: String,
+    recording_warning: Option<String>,
+    model: String,
+    stream: bool,
+    input_count: usize,
+    tools_count: usize,
+    tool_names: Vec<String>,
+    usage: Option<serde_json::Value>,
+    event_counts: BTreeMap<String, usize>,
+    sse_event_count: usize,
+    websocket_frame_count: usize,
+    function_call_count: usize,
+    prompt_block_count: usize,
+    function_calls: Vec<ObservedFunctionCallSummary>,
+    request_body_bytes: usize,
+    response_body_bytes: usize,
+    files: Vec<ObservedFile>,
+    raw_dir: String,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedFunctionCallSummary {
+    id: String,
+    call_id: String,
+    name: String,
+    status: String,
+    has_result: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedTurnSummary {
+    id: String,
+    user: String,
+    started_at: String,
+    calls: Vec<ObservedCallSummary>,
+    assistant: String,
+    tool_outputs: Vec<ToolOutput>,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedFlowSummary {
+    id: String,
+    role: ObservedFlowRole,
+    kind: ObservedRequestKind,
+    label: String,
+    started_at: String,
+    completed_at: String,
+    request_count: usize,
+    relation: Option<ObservedFlowRelation>,
+    turns: Vec<ObservedTurnSummary>,
+}
+
+#[derive(Serialize)]
+struct ObservedSessionOverview {
+    profile: String,
+    session_id: String,
+    raw_root: String,
+    manifest: serde_json::Value,
+    flows: Vec<ObservedFlowSummary>,
+    turns: Vec<ObservedTurnSummary>,
+    requests: Vec<ObservedCallSummary>,
+}
+
+impl From<&ObservedCall> for ObservedCallSummary {
+    fn from(call: &ObservedCall) -> Self {
+        Self {
+            index: call.index.clone(),
+            request_id: call.request_id.clone(),
+            started_at: call.started_at.clone(),
+            completed_at: call.completed_at.clone(),
+            duration_ms: call.duration_ms,
+            method: call.method.clone(),
+            path: call.path.clone(),
+            status: call.status,
+            protocol: call.protocol.clone(),
+            request_kind: call.request_kind,
+            recording_state: call.recording_state.clone(),
+            recording_warning: call.recording_warning.clone(),
+            model: call.model.clone(),
+            stream: call.stream,
+            input_count: call.input_count,
+            tools_count: call.tools_count,
+            tool_names: call.tool_names.clone(),
+            usage: call.usage.clone(),
+            event_counts: call.event_counts.clone(),
+            sse_event_count: call.sse_events.len(),
+            websocket_frame_count: call.websocket_frames.len(),
+            function_call_count: call.function_calls.len(),
+            prompt_block_count: call.prompt_blocks.len(),
+            function_calls: call.function_calls.iter().map(From::from).collect(),
+            request_body_bytes: call.request_body_bytes,
+            response_body_bytes: call.response_body_bytes,
+            files: call.files.clone(),
+            raw_dir: call.raw_dir.clone(),
+        }
+    }
+}
+
+impl From<&ObservedFunctionCall> for ObservedFunctionCallSummary {
+    fn from(call: &ObservedFunctionCall) -> Self {
+        Self {
+            id: call.id.clone(),
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+            status: call.status.clone(),
+            has_result: call.result.is_some(),
+        }
+    }
+}
+
+impl From<&ObservedTurn> for ObservedTurnSummary {
+    fn from(turn: &ObservedTurn) -> Self {
+        Self {
+            id: turn.id.clone(),
+            user: turn.user.clone(),
+            started_at: turn.started_at.clone(),
+            calls: turn.calls.iter().map(From::from).collect(),
+            assistant: turn.assistant.clone(),
+            tool_outputs: turn.tool_outputs.clone(),
+        }
+    }
+}
+
+impl From<&ObservedFlow> for ObservedFlowSummary {
+    fn from(flow: &ObservedFlow) -> Self {
+        let turns = match flow.role {
+            ObservedFlowRole::Main => Vec::new(),
+            ObservedFlowRole::Agent => flow.turns.iter().map(From::from).collect(),
+        };
+        Self {
+            id: flow.id.clone(),
+            role: flow.role,
+            kind: flow.kind,
+            label: flow.label.clone(),
+            started_at: flow.started_at.clone(),
+            completed_at: flow.completed_at.clone(),
+            request_count: flow.request_count,
+            relation: flow.relation.clone(),
+            turns,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

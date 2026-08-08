@@ -37,8 +37,18 @@ pub async fn session(
     State(state): State<GatewayState>,
     AxumPath((profile, session_id)): AxumPath<(String, String)>,
 ) -> Response {
-    match session_inner(&state, &profile, &session_id).await {
+    match session_overview_inner(&state, &profile, &session_id).await {
         Ok(session) => Json(session).into_response(),
+        Err(err) => api_error(StatusCode::NOT_FOUND, err),
+    }
+}
+
+pub async fn request_detail(
+    State(state): State<GatewayState>,
+    AxumPath((profile, session_id, index)): AxumPath<(String, String, String)>,
+) -> Response {
+    match request_detail_inner(&state, &profile, &session_id, &index).await {
+        Ok(call) => Json(call).into_response(),
         Err(err) => api_error(StatusCode::NOT_FOUND, err),
     }
 }

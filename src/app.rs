@@ -86,6 +86,10 @@ pub async fn run() -> anyhow::Result<()> {
             get(crate::observability::session),
         )
         .route(
+            "/api/profiles/:profile/sessions/:session_id/requests/:index",
+            get(crate::observability::request_detail),
+        )
+        .route(
             "/api/profiles/:profile/sessions/:session_id/testset",
             post(crate::observability::save_testset),
         )

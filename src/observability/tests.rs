@@ -845,3 +845,164 @@ async fn recording_failure_marker_exposes_incomplete_stage() {
     assert!(warning.contains("http_response_body_write"));
     assert!(warning.contains("disk full"));
 }
+
+fn summary_test_call(index: &str) -> ObservedCall {
+    ObservedCall {
+        index: index.to_owned(),
+        request_id: format!("request-{index}"),
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        completed_at: "2026-01-01T00:00:01Z".to_owned(),
+        duration_ms: Some(1000),
+        method: "POST".to_owned(),
+        path: "/v1/messages".to_owned(),
+        status: 200,
+        protocol: "http".to_owned(),
+        request_kind: ObservedRequestKind::Conversation,
+        recording_state: "complete".to_owned(),
+        recording_warning: None,
+        model: "model-x".to_owned(),
+        stream: true,
+        input_count: 3,
+        tools_count: 2,
+        tool_names: vec!["Read".to_owned(), "Edit".to_owned()],
+        tool_definitions: Vec::new(),
+        prompt_blocks: vec![PromptBlock {
+            role: "user".to_owned(),
+            block_type: "text".to_owned(),
+            chars: 5,
+            excerpt: "hello".to_owned(),
+            text: "hello".to_owned(),
+        }],
+        visible_user_messages: vec!["hello".to_owned()],
+        previous_tool_outputs: vec![ToolOutput {
+            call_id: "tool_1".to_owned(),
+            output: "file contents".to_owned(),
+        }],
+        previous_function_calls: Vec::new(),
+        previous_assistant_messages: Vec::new(),
+        function_calls: vec![ObservedFunctionCall {
+            id: "call_1".to_owned(),
+            call_id: "tool_1".to_owned(),
+            name: "Read".to_owned(),
+            status: "completed".to_owned(),
+            arguments: "{}".to_owned(),
+            result: Some("file contents".to_owned()),
+        }],
+        output_text: "done".to_owned(),
+        response_body: None,
+        usage: Some(serde_json::json!({ "total_tokens": 10 })),
+        event_counts: BTreeMap::from([("message_start".to_owned(), 1)]),
+        sse_events: vec![ObservedSseEvent {
+            index: 0,
+            event: None,
+            id: None,
+            retry: None,
+            event_type: "message_start".to_owned(),
+            data: "{}".to_owned(),
+            raw: "data: {}\n\n".to_owned(),
+        }],
+        websocket_frames: Vec::new(),
+        websocket_meta: None,
+        request_meta: serde_json::Value::Null,
+        response_meta: None,
+        request_body: serde_json::Value::Null,
+        timeline: Vec::new(),
+        files: vec![ObservedFile {
+            name: "response_sse.raw".to_owned(),
+            bytes: 9,
+        }],
+        raw_dir: "/tmp/rec".to_owned(),
+        request_body_bytes: 12,
+        response_body_bytes: 9,
+    }
+}
+
+#[test]
+fn observed_call_summary_keeps_light_fields_and_counts() {
+    let call = summary_test_call("000003");
+    let summary = ObservedCallSummary::from(&call);
+
+    assert_eq!(summary.index, "000003");
+    assert_eq!(summary.request_id, "request-000003");
+    assert_eq!(summary.sse_event_count, 1);
+    assert_eq!(summary.function_call_count, 1);
+    assert_eq!(summary.prompt_block_count, 1);
+    assert_eq!(summary.function_calls[0].call_id, "tool_1");
+    assert_eq!(summary.function_calls[0].name, "Read");
+    assert!(summary.function_calls[0].has_result);
+    assert_eq!(summary.usage.as_ref().unwrap()["total_tokens"], 10);
+    assert_eq!(summary.request_body_bytes, 12);
+    assert_eq!(summary.files.len(), 1);
+}
+
+#[test]
+fn overview_keeps_main_turns_out_of_flows_and_preserves_agent_flow_turns() {
+    let call = summary_test_call("000000");
+    let turn = ObservedTurn {
+        id: "turn-000000".to_owned(),
+        user: "hello".to_owned(),
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        calls: vec![call],
+        assistant: "done".to_owned(),
+        tool_outputs: vec![ToolOutput {
+            call_id: "tool_1".to_owned(),
+            output: "file contents".to_owned(),
+        }],
+    };
+    let main_flow = ObservedFlow {
+        id: "main".to_owned(),
+        role: ObservedFlowRole::Main,
+        kind: ObservedRequestKind::Conversation,
+        label: "User conversation".to_owned(),
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        completed_at: "2026-01-01T00:00:01Z".to_owned(),
+        request_count: 1,
+        relation: None,
+        turns: vec![turn.clone()],
+    };
+    let agent_flow = ObservedFlow {
+        id: "agent-000000".to_owned(),
+        role: ObservedFlowRole::Agent,
+        kind: ObservedRequestKind::SessionTitle,
+        label: "Session title".to_owned(),
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        completed_at: "2026-01-01T00:00:01Z".to_owned(),
+        request_count: 1,
+        relation: None,
+        turns: vec![turn],
+    };
+
+    let main_summary = ObservedFlowSummary::from(&main_flow);
+    let agent_summary = ObservedFlowSummary::from(&agent_flow);
+    let turn_summary = ObservedTurnSummary::from(&main_flow.turns[0]);
+
+    assert!(main_summary.turns.is_empty());
+    assert_eq!(main_summary.request_count, 1);
+    assert_eq!(agent_summary.turns.len(), 1);
+    assert_eq!(agent_summary.turns[0].user, "hello");
+    assert_eq!(agent_summary.turns[0].calls[0].index, "000000");
+    assert_eq!(agent_summary.turns[0].assistant, "done");
+    assert_eq!(agent_summary.turns[0].tool_outputs[0].call_id, "tool_1");
+    assert_eq!(turn_summary.calls[0].sse_event_count, 1);
+}
+
+#[test]
+fn request_detail_rejects_non_numeric_indexes() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let state = GatewayState {
+        client: reqwest::Client::new(),
+        output_root: std::path::PathBuf::from("/nonexistent"),
+        testsets_root: std::path::PathBuf::from("/nonexistent"),
+        access_log_path: std::path::PathBuf::from("/nonexistent/access.log"),
+        profiles: std::sync::Arc::new(HashMap::new()),
+        session_header: axum::http::HeaderName::from_static("x-codex-session-id"),
+        counters: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        replay_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    };
+    let result = runtime.block_on(request_detail_inner(&state, "codex-http", "session", ".."));
+    assert!(result.is_err());
+    let result = runtime.block_on(request_detail_inner(&state, "codex-http", "session", "abc"));
+    assert!(result.is_err());
+    let result = runtime.block_on(request_detail_inner(&state, "codex-http", "session", ""));
+    assert!(result.is_err());
+}
