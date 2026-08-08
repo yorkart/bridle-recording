@@ -1,5 +1,174 @@
 use super::*;
 
+/// Relationship between a recorded session and its parent session, derived
+/// from the raw request headers (for example Codex `x-codex-turn-metadata` /
+/// `x-codex-parent-thread-id` on guardian auto-review approval sessions).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) struct SessionRelation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_source: Option<String>,
+}
+
+impl SessionRelation {
+    fn is_empty(&self) -> bool {
+        self.parent_session_id.is_none()
+            && self.subagent_kind.is_none()
+            && self.thread_source.is_none()
+    }
+}
+
+pub(super) fn relation_from_headers(headers: &[HeaderRecord]) -> Option<SessionRelation> {
+    let mut relation = SessionRelation::default();
+    if let Some(metadata) = recorded_header_text(headers, "x-codex-turn-metadata") {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) {
+            relation.parent_session_id = value
+                .get("parent_thread_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(ToOwned::to_owned);
+            relation.subagent_kind = value
+                .get("subagent_kind")
+                .and_then(serde_json::Value::as_str)
+                .filter(|kind| !kind.is_empty())
+                .map(ToOwned::to_owned);
+            relation.thread_source = value
+                .get("thread_source")
+                .and_then(serde_json::Value::as_str)
+                .filter(|source| !source.is_empty() && *source != "user")
+                .map(ToOwned::to_owned);
+        }
+    }
+    if relation.parent_session_id.is_none() {
+        relation.parent_session_id = recorded_header_text(headers, "x-codex-parent-thread-id")
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+    }
+    if relation.subagent_kind.is_none() {
+        relation.subagent_kind = recorded_header_text(headers, "x-openai-subagent")
+            .filter(|kind| !kind.is_empty())
+            .map(ToOwned::to_owned);
+    }
+    if relation.is_empty() {
+        None
+    } else {
+        Some(relation)
+    }
+}
+
+/// Reads the relationship from a session's recorded request headers. Stops at
+/// the first request that carries one, and caps the scan so the session list
+/// stays cheap even for long sessions.
+pub(super) async fn session_relation(session_dir: &Path) -> SessionRelation {
+    let requests_dir = session_dir.join("requests");
+    let mut entries = match fs::read_dir(&requests_dir).await {
+        Ok(entries) => entries,
+        Err(_) => return SessionRelation::default(),
+    };
+    let mut request_dirs = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+        if file_type.is_dir() {
+            request_dirs.push(entry.path());
+            if request_dirs.len() >= 16 {
+                break;
+            }
+        }
+    }
+    request_dirs.sort();
+    for request_dir in request_dirs {
+        let Ok(headers) =
+            read_json::<Vec<HeaderRecord>>(&request_dir.join("request_headers.json")).await
+        else {
+            continue;
+        };
+        if let Some(relation) = relation_from_headers(&headers) {
+            return relation;
+        }
+    }
+    SessionRelation::default()
+}
+
+/// Builds a session-id -> relation map by scanning the recordings directory
+/// once. Any parse or read failure is treated as "no relationship" so a single
+/// malformed session never breaks session listing or the overview.
+pub(super) async fn session_relations(
+    recordings_dir: &Path,
+) -> anyhow::Result<HashMap<String, SessionRelation>> {
+    let mut relations = HashMap::new();
+    let mut entries = match fs::read_dir(recordings_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(relations),
+        Err(err) => {
+            return Err(err).with_context(|| format!("read {}", recordings_dir.display()));
+        }
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(session_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if session_id == UNKNOWN_SESSION {
+            continue;
+        }
+        let relation = session_relation(&entry.path()).await;
+        if !relation.is_empty() {
+            relations.insert(session_id, relation);
+        }
+    }
+    Ok(relations)
+}
+
+async fn load_session_manifest_summary(session_dir: &Path) -> (u64, String, String) {
+    let manifest = read_json::<serde_json::Value>(&session_dir.join("manifest.json"))
+        .await
+        .ok();
+    let request_count = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("request_count"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+    let created_at = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("created_at"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    let updated_at = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("updated_at"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_default();
+    (request_count, created_at, updated_at)
+}
+
+/// Cheap time window for a child session: the first request's started_at and
+/// completed_at. Used to anchor the child session to a main turn without
+/// loading the child's request bodies.
+async fn session_request_window(session_dir: &Path) -> (Option<String>, Option<String>) {
+    let first_dir = session_dir.join("requests").join("000000");
+    let started_at = read_json::<RequestMeta>(&first_dir.join("request_meta.json"))
+        .await
+        .ok()
+        .map(|meta| meta.started_at);
+    let completed_at = read_json::<ResponseMeta>(&first_dir.join("response_meta.json"))
+        .await
+        .ok()
+        .map(|meta| meta.completed_at);
+    (started_at, completed_at)
+}
+
 pub(super) async fn sessions_inner(
     state: &GatewayState,
     profile: &str,
@@ -9,6 +178,7 @@ pub(super) async fn sessions_inner(
         .get(profile)
         .with_context(|| format!("unknown profile: {profile}"))?;
     let recordings_dir = profile.home_dir.join("recordings");
+    let relations = session_relations(&recordings_dir).await?;
     let mut out = Vec::new();
     let mut entries = match fs::read_dir(&recordings_dir).await {
         Ok(entries) => entries,
@@ -26,31 +196,17 @@ pub(super) async fn sessions_inner(
         if session_id == UNKNOWN_SESSION {
             continue;
         }
-        let manifest_path = entry.path().join("manifest.json");
-        let manifest = read_json::<serde_json::Value>(&manifest_path).await.ok();
-        let request_count = manifest
-            .as_ref()
-            .and_then(|manifest| manifest.get("request_count"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or_default();
-        let created_at = manifest
-            .as_ref()
-            .and_then(|manifest| manifest.get("created_at"))
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-            .unwrap_or_default();
-        let updated_at = manifest
-            .as_ref()
-            .and_then(|manifest| manifest.get("updated_at"))
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-            .unwrap_or_default();
+        let (request_count, created_at, updated_at) =
+            load_session_manifest_summary(&entry.path()).await;
+        let relation = relations.get(&session_id);
         out.push(ObservedSessionSummary {
             session_id,
             profile: profile.name.clone(),
             created_at,
             updated_at,
             request_count,
+            parent_session_id: relation.and_then(|relation| relation.parent_session_id.clone()),
+            subagent_kind: relation.and_then(|relation| relation.subagent_kind.clone()),
         });
     }
 
@@ -103,6 +259,34 @@ pub(super) async fn session_overview_inner(
     let requests = load_observed_calls(&session_dir, provider).await?;
     let turns = provider.build_turns(&requests);
     let flows = provider.build_flows(&requests, &turns);
+    let recordings_dir = profile_config.home_dir.join("recordings");
+    let relations = session_relations(&recordings_dir).await?;
+    let relation = relations.get(session_id);
+    let mut child_sessions = Vec::new();
+    for (child_id, child_relation) in relations.iter() {
+        if child_relation.parent_session_id.as_deref() != Some(session_id) {
+            continue;
+        }
+        let child_dir = recordings_dir.join(child_id);
+        let (request_count, created_at, updated_at) =
+            load_session_manifest_summary(&child_dir).await;
+        let (started_at, completed_at) = session_request_window(&child_dir).await;
+        let relation = child_session_relation(
+            &turns,
+            started_at.as_deref().unwrap_or_default(),
+            completed_at.as_deref().unwrap_or_default(),
+        );
+        child_sessions.push(ObservedChildSessionSummary {
+            session_id: child_id.clone(),
+            subagent_kind: child_relation.subagent_kind.clone(),
+            thread_source: child_relation.thread_source.clone(),
+            request_count,
+            created_at,
+            updated_at,
+            relation,
+        });
+    }
+    child_sessions.sort_by(|left, right| left.created_at.cmp(&right.created_at));
     Ok(ObservedSessionOverview {
         profile: profile.to_owned(),
         session_id: session_id.to_owned(),
@@ -111,6 +295,10 @@ pub(super) async fn session_overview_inner(
         flows: flows.iter().map(ObservedFlowSummary::from).collect(),
         turns: turns.iter().map(ObservedTurnSummary::from).collect(),
         requests: requests.iter().map(ObservedCallSummary::from).collect(),
+        parent_session_id: relation.and_then(|relation| relation.parent_session_id.clone()),
+        subagent_kind: relation.and_then(|relation| relation.subagent_kind.clone()),
+        thread_source: relation.and_then(|relation| relation.thread_source.clone()),
+        child_sessions,
     })
 }
 
@@ -181,11 +369,7 @@ async fn scan_session_tool_results(
     request_dirs.sort();
 
     for request_dir in request_dirs {
-        if request_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            == Some(exclude_index)
-        {
+        if request_dir.file_name().and_then(|name| name.to_str()) == Some(exclude_index) {
             continue;
         }
         let body = match fs::read(request_dir.join("request_body.raw")).await {

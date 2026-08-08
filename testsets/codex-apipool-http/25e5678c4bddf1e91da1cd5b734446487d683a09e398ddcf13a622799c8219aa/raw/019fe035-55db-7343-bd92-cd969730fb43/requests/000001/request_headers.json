@@ -1,0 +1,93 @@
+[
+  {
+    "name": "x-codex-beta-features",
+    "value": {
+      "kind": "text",
+      "value": "remote_compaction_v2"
+    }
+  },
+  {
+    "name": "x-codex-window-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-codex-turn-metadata",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "x-client-request-id",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "session-id",
+    "value": {
+      "kind": "text",
+      "value": "019fe035-55db-7343-bd92-cd969730fb43"
+    }
+  },
+  {
+    "name": "thread-id",
+    "value": {
+      "kind": "text",
+      "value": "019fe035-55db-7343-bd92-cd969730fb43"
+    }
+  },
+  {
+    "name": "accept",
+    "value": {
+      "kind": "text",
+      "value": "text/event-stream"
+    }
+  },
+  {
+    "name": "content-type",
+    "value": {
+      "kind": "text",
+      "value": "application/json"
+    }
+  },
+  {
+    "name": "authorization",
+    "value": {
+      "kind": "text",
+      "value": "******"
+    }
+  },
+  {
+    "name": "originator",
+    "value": {
+      "kind": "text",
+      "value": "codex-tui"
+    }
+  },
+  {
+    "name": "user-agent",
+    "value": {
+      "kind": "text",
+      "value": "codex-tui/0.144.5 (Mac OS 26.5.1; arm64) ghostty/1.3.2-HEAD-_05c3e29 (codex-tui; 0.144.5)"
+    }
+  },
+  {
+    "name": "host",
+    "value": {
+      "kind": "text",
+      "value": "127.0.0.1:8787"
+    }
+  },
+  {
+    "name": "content-length",
+    "value": {
+      "kind": "text",
+      "value": "64631"
+    }
+  }
+]

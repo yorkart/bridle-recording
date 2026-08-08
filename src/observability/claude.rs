@@ -195,7 +195,7 @@ fn agent_operation_relation(
     })
 }
 
-fn call_is_active_at(call: &ObservedCall, timestamp: DateTime<Utc>) -> bool {
+pub(super) fn call_is_active_at(call: &ObservedCall, timestamp: DateTime<Utc>) -> bool {
     let Some(started_at) = parse_timestamp(&call.started_at) else {
         return false;
     };
@@ -203,7 +203,7 @@ fn call_is_active_at(call: &ObservedCall, timestamp: DateTime<Utc>) -> bool {
         && parse_timestamp(&call.completed_at).is_none_or(|completed_at| timestamp <= completed_at)
 }
 
-fn intervals_overlap(
+pub(super) fn intervals_overlap(
     left_started: DateTime<Utc>,
     left_completed: Option<DateTime<Utc>>,
     right_started: Option<DateTime<Utc>>,
@@ -216,21 +216,21 @@ fn intervals_overlap(
         && right_completed.is_none_or(|completed| left_started <= completed)
 }
 
-fn timestamp_is_at_or_before(left: &str, right: &str) -> bool {
+pub(super) fn timestamp_is_at_or_before(left: &str, right: &str) -> bool {
     match (parse_timestamp(left), parse_timestamp(right)) {
         (Some(left), Some(right)) => left <= right,
         _ => left <= right,
     }
 }
 
-fn timestamp_is_after(left: &str, right: &str) -> bool {
+pub(super) fn timestamp_is_after(left: &str, right: &str) -> bool {
     match (parse_timestamp(left), parse_timestamp(right)) {
         (Some(left), Some(right)) => left > right,
         _ => left > right,
     }
 }
 
-fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
+pub(super) fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
     value.parse().ok()
 }
 
@@ -284,7 +284,7 @@ fn session_title_subject(request_body: &serde_json::Value) -> Option<&str> {
     Some(text[start..end].trim())
 }
 
-fn timestamp_distance_ms(left: &str, right: &str) -> i64 {
+pub(super) fn timestamp_distance_ms(left: &str, right: &str) -> i64 {
     let Some(left) = left.parse::<DateTime<Utc>>().ok() else {
         return i64::MAX;
     };

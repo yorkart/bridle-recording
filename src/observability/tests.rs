@@ -1006,3 +1006,307 @@ fn request_detail_rejects_non_numeric_indexes() {
     let result = runtime.block_on(request_detail_inner(&state, "codex-http", "session", ""));
     assert!(result.is_err());
 }
+
+#[test]
+fn relation_from_headers_extracts_codex_guardian_relationship() {
+    let headers = vec![
+        text_header("thread-id", "child-1"),
+        text_header(
+            "x-codex-turn-metadata",
+            r#"{"session_id":"parent-1","thread_id":"child-1","parent_thread_id":"parent-1","subagent_kind":"guardian","thread_source":"subagent"}"#,
+        ),
+    ];
+    let relation = relation_from_headers(&headers).expect("relation");
+    assert_eq!(relation.parent_session_id.as_deref(), Some("parent-1"));
+    assert_eq!(relation.subagent_kind.as_deref(), Some("guardian"));
+    assert_eq!(relation.thread_source.as_deref(), Some("subagent"));
+}
+
+#[test]
+fn relation_from_headers_falls_back_to_parent_thread_header() {
+    let headers = vec![
+        text_header("thread-id", "child-1"),
+        text_header("x-codex-parent-thread-id", "parent-1"),
+        text_header("x-openai-subagent", "guardian"),
+    ];
+    let relation = relation_from_headers(&headers).expect("relation");
+    assert_eq!(relation.parent_session_id.as_deref(), Some("parent-1"));
+    assert_eq!(relation.subagent_kind.as_deref(), Some("guardian"));
+    assert_eq!(relation.thread_source, None);
+}
+
+#[test]
+fn relation_from_headers_returns_none_without_relationship_headers() {
+    let parent_metadata = vec![text_header(
+        "x-codex-turn-metadata",
+        r#"{"session_id":"parent-1","thread_id":"parent-1","thread_source":"user"}"#,
+    )];
+    assert_eq!(relation_from_headers(&parent_metadata), None);
+    assert_eq!(relation_from_headers(&[]), None);
+}
+
+#[tokio::test]
+async fn session_relations_links_guardian_sessions_to_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let recordings = temp.path().join("recordings");
+    let parent_dir = recordings.join("parent-1");
+    let child_dir = recordings.join("child-1");
+    fs::create_dir_all(parent_dir.join("requests/000000"))
+        .await
+        .unwrap();
+    fs::create_dir_all(child_dir.join("requests/000000"))
+        .await
+        .unwrap();
+    write_json_pretty(
+        parent_dir.join("requests/000000/request_headers.json"),
+        &vec![text_header("thread-id", "parent-1")],
+    )
+    .await
+    .unwrap();
+    write_json_pretty(
+        child_dir.join("requests/000000/request_headers.json"),
+        &vec![
+            text_header("thread-id", "child-1"),
+            text_header("x-codex-parent-thread-id", "parent-1"),
+            text_header("x-openai-subagent", "guardian"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let relations = session_relations(&recordings).await.unwrap();
+    let child = relations.get("child-1").expect("child relation");
+    assert_eq!(child.parent_session_id.as_deref(), Some("parent-1"));
+    assert_eq!(child.subagent_kind.as_deref(), Some("guardian"));
+    assert!(!relations.contains_key("parent-1"));
+}
+
+#[test]
+fn child_session_relation_anchors_to_main_call_in_progress() {
+    let call = summary_test_call("000000");
+    let turn = ObservedTurn {
+        id: "turn-000000".to_owned(),
+        user: "hello".to_owned(),
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        calls: vec![call],
+        assistant: "done".to_owned(),
+        tool_outputs: Vec::new(),
+    };
+    let relation =
+        child_session_relation(&[turn], "2026-01-01T00:00:00.500Z", "2026-01-01T00:00:02Z")
+            .expect("relation");
+    assert_eq!(relation.main_turn_id, "turn-000000");
+    assert_eq!(relation.timing, ObservedFlowTiming::DuringCall);
+    assert_eq!(relation.anchor_call_index.as_deref(), Some("000000"));
+    assert!(relation.overlaps_main);
+}
+
+#[test]
+fn child_session_relation_after_main_turn_completes() {
+    let call = summary_test_call("000000");
+    let turn = ObservedTurn {
+        id: "turn-000000".to_owned(),
+        user: "hello".to_owned(),
+        started_at: "2026-01-01T00:00:00Z".to_owned(),
+        calls: vec![call],
+        assistant: "done".to_owned(),
+        tool_outputs: Vec::new(),
+    };
+    let relation = child_session_relation(&[turn], "2026-01-01T00:00:10Z", "2026-01-01T00:00:11Z")
+        .expect("relation");
+    assert_eq!(relation.main_turn_id, "turn-000000");
+    assert_eq!(relation.timing, ObservedFlowTiming::AfterTurn);
+}
+
+async fn write_session_request(
+    request_dir: &std::path::Path,
+    session_id: &str,
+    index: u64,
+    started_at: &str,
+    completed_at: &str,
+    headers: Vec<HeaderRecord>,
+    model: &str,
+    user_text: &str,
+) {
+    fs::create_dir_all(request_dir).await.unwrap();
+    let body = serde_json::json!({
+        "model": model,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": user_text}]
+        }],
+        "stream": true
+    });
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    write_json_pretty(
+        request_dir.join("request_meta.json"),
+        &RequestMeta {
+            index,
+            session_id: session_id.to_owned(),
+            session_source: crate::types::SessionSource::Header {
+                name: "thread-id".to_owned(),
+            },
+            started_at: started_at.to_owned(),
+            method: "POST".to_owned(),
+            path: "/responses".to_owned(),
+            query: None,
+            upstream_url: "https://apipool.dev/responses".to_owned(),
+            request_body_bytes: body_bytes.len(),
+        },
+    )
+    .await
+    .unwrap();
+    fs::write(request_dir.join("request_body.raw"), body_bytes)
+        .await
+        .unwrap();
+    write_json_pretty(request_dir.join("request_headers.json"), &headers)
+        .await
+        .unwrap();
+    write_json_pretty(
+        request_dir.join("response_meta.json"),
+        &ResponseMeta {
+            status: 200,
+            started_at: started_at.to_owned(),
+            completed_at: completed_at.to_owned(),
+            response_body_bytes: 0,
+            sse_event_count: 0,
+            upstream_error: None,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn session_overview_links_guardian_child_sessions() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let recordings = home.join("recordings");
+    let parent_dir = recordings.join("parent-1");
+    let child_dir = recordings.join("child-1");
+
+    write_json_pretty(
+        parent_dir.join("manifest.json"),
+        &serde_json::json!({
+            "session_id": "parent-1",
+            "created_at": "2026-08-08T06:00:00Z",
+            "updated_at": "2026-08-08T06:05:00Z",
+            "request_count": 2,
+            "recorder": {}
+        }),
+    )
+    .await
+    .unwrap();
+    write_session_request(
+        &parent_dir.join("requests/000000"),
+        "parent-1",
+        0,
+        "2026-08-08T06:00:01Z",
+        "2026-08-08T06:00:05Z",
+        vec![
+            text_header("thread-id", "parent-1"),
+            text_header(
+                "x-codex-turn-metadata",
+                r#"{"session_id":"parent-1","thread_id":"parent-1","thread_source":"user"}"#,
+            ),
+        ],
+        "model-x",
+        "hello",
+    )
+    .await;
+    write_session_request(
+        &parent_dir.join("requests/000001"),
+        "parent-1",
+        1,
+        "2026-08-08T06:04:00Z",
+        "2026-08-08T06:04:20Z",
+        vec![text_header("thread-id", "parent-1")],
+        "model-x",
+        "hello",
+    )
+    .await;
+
+    write_json_pretty(
+        child_dir.join("manifest.json"),
+        &serde_json::json!({
+            "session_id": "child-1",
+            "created_at": "2026-08-08T06:04:10Z",
+            "updated_at": "2026-08-08T06:04:42Z",
+            "request_count": 1,
+            "recorder": {}
+        }),
+    )
+    .await
+    .unwrap();
+    write_session_request(
+        &child_dir.join("requests/000000"),
+        "child-1",
+        0,
+        "2026-08-08T06:04:10Z",
+        "2026-08-08T06:04:12Z",
+        vec![
+            text_header("thread-id", "child-1"),
+            text_header(
+                "x-codex-turn-metadata",
+                r#"{"session_id":"parent-1","thread_id":"child-1","parent_thread_id":"parent-1","subagent_kind":"guardian","thread_source":"subagent"}"#,
+            ),
+        ],
+        "codex-auto-review",
+        "approval",
+    )
+    .await;
+
+    let state = GatewayState {
+        client: reqwest::Client::new(),
+        output_root: temp.path().to_path_buf(),
+        testsets_root: temp.path().join("testsets"),
+        access_log_path: temp.path().join("access.log"),
+        profiles: std::sync::Arc::new(HashMap::from([(
+            "codex-apipool-http".to_owned(),
+            crate::types::ProfileConfig {
+                name: "codex-apipool-http".to_owned(),
+                upstream: reqwest::Url::parse("https://apipool.dev/").unwrap(),
+                supports_websocket: false,
+                home_dir: home,
+            },
+        )])),
+        session_header: axum::http::HeaderName::from_static("x-codex-session-id"),
+        counters: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        replay_sessions: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+    };
+
+    let overview = session_overview_inner(&state, "codex-apipool-http", "parent-1")
+        .await
+        .unwrap();
+    assert!(overview.parent_session_id.is_none());
+    assert_eq!(overview.child_sessions.len(), 1);
+    let child = &overview.child_sessions[0];
+    assert_eq!(child.session_id, "child-1");
+    assert_eq!(child.subagent_kind.as_deref(), Some("guardian"));
+    assert_eq!(child.request_count, 1);
+    let relation = child.relation.as_ref().expect("child relation");
+    assert_eq!(relation.main_turn_id, "turn-000000");
+    assert_eq!(relation.timing, ObservedFlowTiming::DuringCall);
+    assert_eq!(relation.anchor_call_index.as_deref(), Some("000001"));
+    assert!(relation.overlaps_main);
+
+    let child_overview = session_overview_inner(&state, "codex-apipool-http", "child-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        child_overview.parent_session_id.as_deref(),
+        Some("parent-1")
+    );
+    assert_eq!(child_overview.subagent_kind.as_deref(), Some("guardian"));
+    assert!(child_overview.child_sessions.is_empty());
+
+    let sessions = sessions_inner(&state, "codex-apipool-http").await.unwrap();
+    assert_eq!(sessions.len(), 2);
+    let child_summary = sessions
+        .iter()
+        .find(|session| session.session_id == "child-1")
+        .expect("child summary");
+    assert_eq!(child_summary.parent_session_id.as_deref(), Some("parent-1"));
+    assert_eq!(child_summary.subagent_kind.as_deref(), Some("guardian"));
+}

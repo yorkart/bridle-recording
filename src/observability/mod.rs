@@ -39,6 +39,10 @@ pub use api::{
 };
 pub use ui::ui;
 
+use claude::{
+    call_is_active_at, intervals_overlap, parse_timestamp, timestamp_distance_ms,
+    timestamp_is_after, timestamp_is_at_or_before,
+};
 use prompt::*;
 use recording::*;
 use sse::*;
@@ -320,6 +324,10 @@ struct ObservedSessionSummary {
     created_at: String,
     updated_at: String,
     request_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagent_kind: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -368,6 +376,81 @@ enum ObservedFlowTiming {
     DuringCall,
     BetweenCalls,
     AfterTurn,
+}
+
+/// Anchors a child session (for example a Codex auto-review / guardian
+/// approval session) to the main turn it ran alongside, mirroring the
+/// relation derivation used for agent flows.
+fn child_session_relation(
+    main_turns: &[ObservedTurn],
+    started_at: &str,
+    completed_at: &str,
+) -> Option<ObservedFlowRelation> {
+    let turn_index = main_turns
+        .iter()
+        .enumerate()
+        .filter(|(_, turn)| turn.started_at.as_str() <= started_at)
+        .max_by(|(_, left), (_, right)| left.started_at.cmp(&right.started_at))
+        .map(|(index, _)| index)
+        .or_else(|| {
+            main_turns
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, turn)| timestamp_distance_ms(&turn.started_at, started_at))
+                .map(|(index, _)| index)
+        })?;
+    let turn = &main_turns[turn_index];
+    let operation_started = parse_timestamp(started_at);
+    let operation_completed = parse_timestamp(completed_at);
+    let during_call = operation_started.and_then(|started| {
+        turn.calls
+            .iter()
+            .find(|main_call| call_is_active_at(main_call, started))
+    });
+    let overlaps_main = operation_started.is_some_and(|started| {
+        turn.calls.iter().any(|main_call| {
+            intervals_overlap(
+                started,
+                operation_completed,
+                parse_timestamp(&main_call.started_at),
+                parse_timestamp(&main_call.completed_at),
+            )
+        })
+    });
+
+    let (timing, anchor_call_index) = if let Some(main_call) = during_call {
+        (
+            ObservedFlowTiming::DuringCall,
+            Some(main_call.index.clone()),
+        )
+    } else if timestamp_is_at_or_before(started_at, &turn.started_at) {
+        (
+            ObservedFlowTiming::TurnStart,
+            turn.calls.first().map(|main_call| main_call.index.clone()),
+        )
+    } else if let Some(last_call) = turn.calls.last().filter(|last_call| {
+        !last_call.completed_at.is_empty()
+            && timestamp_is_after(started_at, &last_call.completed_at)
+    }) {
+        (ObservedFlowTiming::AfterTurn, Some(last_call.index.clone()))
+    } else {
+        let previous_call = turn
+            .calls
+            .iter()
+            .filter(|main_call| timestamp_is_at_or_before(&main_call.started_at, started_at))
+            .max_by(|left, right| left.started_at.cmp(&right.started_at));
+        (
+            ObservedFlowTiming::BetweenCalls,
+            previous_call.map(|main_call| main_call.index.clone()),
+        )
+    };
+
+    Some(ObservedFlowRelation {
+        main_turn_id: turn.id.clone(),
+        timing,
+        anchor_call_index,
+        overlaps_main,
+    })
 }
 
 #[derive(Clone, Serialize)]
@@ -496,6 +579,28 @@ struct ObservedSessionOverview {
     flows: Vec<ObservedFlowSummary>,
     turns: Vec<ObservedTurnSummary>,
     requests: Vec<ObservedCallSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagent_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread_source: Option<String>,
+    #[serde(default)]
+    child_sessions: Vec<ObservedChildSessionSummary>,
+}
+
+#[derive(Clone, Serialize)]
+struct ObservedChildSessionSummary {
+    session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subagent_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread_source: Option<String>,
+    request_count: u64,
+    created_at: String,
+    updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relation: Option<ObservedFlowRelation>,
 }
 
 impl From<&ObservedCall> for ObservedCallSummary {
