@@ -43,7 +43,11 @@ bridle-recording 是一个面向模型应用和 Agent 的透明代理录制工�
 
 **Profile**
 
-Profile 表示一个被录制的客户端或模型通道。当前内置示例包括 `codex-http`、`codex-websocket` 和 `claude`。每个 profile 有自己的上游地址、录制目录和 mock 路由。
+Profile 表示一个被录制的客户端或模型通道。当前内置示例包括 `codex-http`、
+`codex-websocket` 和 `claude`。每个 profile 是
+`~/.bridle-recording/<name>/bridle-profile.json` 下的一条注册表配置，记录真实上游
+地址、用户自己的 agent home 路径和 recorder 入口；每个 profile 有自己的录制
+目录和 mock 路由。用户自己的 `~/.codex`、`~/.claude` 保持原样，不会被复制。
 
 **Session**
 
@@ -68,15 +72,22 @@ Testset 是保存到当前 Git 仓库中的测试资产。它包含测试集索�
 ```text
 ~/.bridle-recording/
   codex-http/
+    bridle-profile.json
     recordings/
     derived/mock/
   codex-websocket/
+    bridle-profile.json
     recordings/
     derived/mock/
   claude/
+    bridle-profile.json
     recordings/
     derived/mock/
 ```
+
+每个 profile 目录下都有一个 `bridle-profile.json` 配置文件，声明 agent
+命令、用户真实 agent home、recorder 入口以及只覆盖模型地址的启动参数；配置
+和录制输出同处一个目录。目录里不再包含 agent home 副本。
 
 `recordings/` 只包含在线录制的原始数据和必要元信息。mock 优先回放仓库中的测试集，未匹配到测试集时才回退到本地 recording，供临时回放使用。mock 的匹配索引与可选响应改写配置位于 `derived/mock/`，不得写回 recording session 或测试集 `raw/`。
 

@@ -7,17 +7,12 @@ recorder *args:
     #!/usr/bin/env bash
     exec ./scripts/run-recorder.sh "$@"
 
-# Start Claude through the recorder.
-claude *args:
+# Install the default profile registry entries.
+setup:
     #!/usr/bin/env bash
-    exec ./scripts/run-claude.sh "$@"
+    exec ./scripts/setup-profiles.sh "$@"
 
-# Start Codex through the recorder's HTTP endpoint.
-codex-http *args:
+# Launch an agent through the recorder using a profile registry entry.
+agent profile *args:
     #!/usr/bin/env bash
-    exec ./scripts/run-codex-http.sh "$@"
-
-# Start Codex through the recorder's WebSocket proxy.
-codex-websocket *args:
-    #!/usr/bin/env bash
-    exec ./scripts/run-codex-websocket.sh "$@"
+    exec ./scripts/run-agent.sh "{{profile}}" "$@"

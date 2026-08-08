@@ -1,0 +1,26 @@
+{
+  "description": "Codex HTTP/Responses traffic through the recorder to the apipool relay; uses the dedicated ~/.codex-apipool home and its auth.",
+  "command": "codex",
+  "agent_home": "~/.codex-apipool",
+  "recorder_base_url": "http://127.0.0.1:8787/codex-apipool-http",
+  "upstream": "https://apipool.dev",
+  "supports_websocket": false,
+  "launch": {
+    "env": {
+      "CODEX_HOME": "{{agent_home}}",
+      "NO_PROXY": "127.0.0.1,localhost"
+    },
+    "args": [
+      "--config",
+      "model_provider=\"recorder-openai-http\"",
+      "--config",
+      "model_providers.recorder-openai-http.name=\"OpenAI\"",
+      "--config",
+      "model_providers.recorder-openai-http.base_url=\"{{recorder_base_url}}\"",
+      "--config",
+      "model_providers.recorder-openai-http.wire_api=\"responses\"",
+      "--config",
+      "model_providers.recorder-openai-http.requires_openai_auth=true"
+    ]
+  }
+}

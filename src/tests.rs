@@ -132,13 +132,13 @@ fn joins_upstream_base_path_and_request_path() {
 #[tokio::test]
 async fn claude_profile_reads_upstream_from_user_settings() {
     let temp = tempfile::tempdir().unwrap();
-    let profile_root = temp.path().join("profiles");
+    let profile_root = temp.path().join("bridle");
     let profile_dir = profile_root.join("claude");
     let claude_settings = temp.path().join("claude-settings.json");
     fs::create_dir_all(&profile_dir).await.unwrap();
     write_bytes_file(
-        profile_dir.join("bridle-profile.toml"),
-        b"upstream_from = \"claude-settings\"\nsupports_websocket = false\n",
+        profile_dir.join("bridle-profile.json"),
+        br#"{"upstream_from":"claude-settings","supports_websocket":false}"#,
     )
     .await
     .unwrap();
@@ -156,13 +156,13 @@ async fn claude_profile_reads_upstream_from_user_settings() {
 
     assert_eq!(claude.upstream.as_str(), "https://relay.example/anthropic");
     assert!(!claude.supports_websocket);
-    assert_eq!(claude.home_dir, profile_dir);
+    assert_eq!(claude.home_dir, profile_root.join("claude"));
 }
 
 #[tokio::test]
-async fn auto_discovers_claude_profile_without_runtime_template() {
+async fn auto_discovers_claude_profile_without_registry_entry() {
     let temp = tempfile::tempdir().unwrap();
-    let profile_root = temp.path().join("profiles");
+    let profile_root = temp.path().join("bridle");
     let claude_settings = temp.path().join("claude-settings.json");
     fs::create_dir_all(&profile_root).await.unwrap();
     write_bytes_file(
@@ -179,6 +179,46 @@ async fn auto_discovers_claude_profile_without_runtime_template() {
 
     assert_eq!(claude.upstream.as_str(), "https://relay.example/anthropic");
     assert_eq!(claude.home_dir, profile_root.join("claude"));
+}
+
+#[tokio::test]
+async fn loads_profiles_from_per_profile_config_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile_root = temp.path().join("bridle");
+    let codex_dir = profile_root.join("codex-http");
+    let websocket_dir = profile_root.join("codex-websocket");
+    let claude_settings = temp.path().join("claude-settings.json");
+    fs::create_dir_all(&codex_dir).await.unwrap();
+    fs::create_dir_all(&websocket_dir).await.unwrap();
+    write_bytes_file(
+        codex_dir.join("bridle-profile.json"),
+        br#"{"upstream":"https://example.test/backend-api/codex","supports_websocket":false}"#,
+    )
+    .await
+    .unwrap();
+    write_bytes_file(
+        websocket_dir.join("bridle-profile.json"),
+        br#"{"upstream":"https://example.test/backend-api/codex","supports_websocket":true}"#,
+    )
+    .await
+    .unwrap();
+    write_bytes_file(claude_settings.clone(), b"{}").await.unwrap();
+
+    let profiles = load_profiles_with_claude_settings(&profile_root, &claude_settings)
+        .await
+        .unwrap();
+
+    let codex = profiles.get("codex-http").unwrap();
+    assert_eq!(
+        codex.upstream.as_str(),
+        "https://example.test/backend-api/codex"
+    );
+    assert!(!codex.supports_websocket);
+    assert_eq!(codex.home_dir, profile_root.join("codex-http"));
+
+    let websocket = profiles.get("codex-websocket").unwrap();
+    assert!(websocket.supports_websocket);
+    assert_eq!(websocket.home_dir, profile_root.join("codex-websocket"));
 }
 
 #[test]

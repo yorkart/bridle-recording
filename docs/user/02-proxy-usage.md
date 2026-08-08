@@ -74,32 +74,35 @@ curl -s http://127.0.0.1:8787/help | jq .
 
 ## 配置 Codex HTTP 录制
 
-第一次使用时，先把 profile 模板复制到本机运行目录，并复制 Codex 登录态：
+安装 profile 注册表条目（已有配置会被覆盖）：
 
 ```sh
-mkdir -p ~/.bridle-recording
-cp -R agent-home/codex-http ~/.bridle-recording/
-cp ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
+./scripts/setup-profiles.sh
 ```
 
 然后启动 Codex：
 
 ```sh
-./scripts/run-codex-http.sh
+./scripts/run-recorder.sh
+./scripts/run-agent.sh codex-http
 ```
 
-这个脚本会设置：
+`setup-profiles.sh` 会在 `~/.bridle-recording/codex-http/` 下生成
+`bridle-profile.json`。注册表条目里的 `agent_home` 默认指向你自己的
+`~/.codex`：不再复制 agent home，也不再复制 `auth.json`，登录态直接用你自己
+的。
 
-```sh
-BRIDLE_AGENT_HOME=~/.bridle-recording/codex-http
-CODEX_HOME=~/.bridle-recording/codex-http
-NO_PROXY=127.0.0.1,localhost
-```
+`run-agent.sh` 是纯通用启动器，不感知具体 agent：它只读取注册表条目，把
+`{{recorder_base_url}}` / `{{agent_home}}` 替换成实际值，然后导出
+`launch.env` 里的环境变量、按 `launch.args` 里的命令行参数集合执行
+`command`。`codex-http/bridle-profile.json` 里声明了 `CODEX_HOME` 指向你的真实 `~/.codex`、
+`NO_PROXY=127.0.0.1,localhost`，以及注入 `recorder-openai-http` provider 和
+`http://127.0.0.1:8787/codex-http` 的 `--config` 参数。它不修改
+`~/.codex/config.toml`；即使 Codex 更新了你 home 下的文件，通过脚本启动的
+模型流量仍会经过 recorder。
 
-脚本还会在每次启动时通过 Codex 命令行配置显式注入
-`recorder-openai-http` provider 和
-`http://127.0.0.1:8787/codex-http`。即使 Codex 更新了该 home 下的
-`config.toml`，通过脚本启动的模型流量仍会经过 recorder。
+需要改 recorder 地址或自己的 home 路径时，直接编辑
+`~/.bridle-recording/codex-http/bridle-profile.json`，不需要改任何脚本。
 
 `NO_PROXY` 很重要，它保证客户端访问本机 recorder 时不会再次绕到系统代理。
 
@@ -108,26 +111,27 @@ NO_PROXY=127.0.0.1,localhost
 如果需要 WebSocket profile：
 
 ```sh
-mkdir -p ~/.bridle-recording
-cp -R agent-home/codex-websocket ~/.bridle-recording/
-cp ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
-
-./scripts/run-codex-websocket.sh
+./scripts/run-agent.sh codex-websocket
 ```
+
+`codex-websocket` 与 `codex-http` 两个目录里的配置区别只有 recorder 入口
+（`/codex-websocket`）和 WebSocket 特性开关；`agent_home` 同样指向你自己的
+`~/.codex`。
 
 ## 配置 Claude Code 录制
 
-Claude profile 直接复用用户已有的 `~/.claude/settings.json`，不需要复制 profile 或认证令牌。先启动 recorder，再通过专用脚本启动 Claude Code：
+Claude profile 直接复用用户已有的 `~/.claude/settings.json`，不需要复制
+profile 或认证令牌。先启动 recorder，再通过统一启动器启动 Claude Code：
 
 ```sh
 ./scripts/run-recorder.sh
-./scripts/run-claude.sh
+./scripts/run-agent.sh claude
 ```
 
 这条链路的配置职责如下：
 
 - recorder 启动时自动发现 `~/.claude/settings.json`，从 `env.ANTHROPIC_BASE_URL` 读取真实上游；没有配置时使用 `https://api.anthropic.com`。
-- `run-claude.sh` 仍让 Claude Code 正常加载原始用户 settings，只额外传入一段内存 settings，在当前进程中把 `ANTHROPIC_BASE_URL` 覆盖为 `http://127.0.0.1:8787/claude`。
+- `run-agent.sh claude` 读取 `claude/bridle-profile.json`，仍让 Claude Code 正常加载原始用户 settings，只把 `ANTHROPIC_BASE_URL` 覆盖为 `http://127.0.0.1:8787/claude`。
 - `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 仍由 Claude Code 自己读取并形成认证 header。recorder 不提取或使用该凭据，只原样转发和录制该 header。
 - recorder 使用 Claude Code 自带的 `x-claude-code-session-id` 对录制分组，无需增加自定义 header。
 
@@ -202,11 +206,15 @@ curl http://127.0.0.1:8787/health
 
 **Codex 请求没有进入 recorder**
 
-确认 `CODEX_HOME` 指向 `~/.bridle-recording/codex-http`，并确认 profile 的 `config.toml` 中 `base_url` 是 recorder 地址。
+确认通过 `./scripts/run-agent.sh codex-http` 启动，并检查
+`~/.bridle-recording/codex-http/bridle-profile.json` 中 `recorder_base_url` 是
+recorder 地址、`agent_home` 指向你自己的 Codex home。也可以加
+`BRIDLE_LAUNCH_DEBUG=1` 查看实际注入的地址。
 
 **Claude Code 请求没有进入 recorder**
 
-确认通过 `./scripts/run-claude.sh` 启动，并访问 `/api/profiles` 检查是否包含 `claude`。如果刚修改 Claude settings，需要重启 recorder。
+确认通过 `./scripts/run-agent.sh claude` 启动，并访问 `/api/profiles` 检查
+是否包含 `claude`。如果刚修改 Claude settings，需要重启 recorder。
 
 **请求被系统代理绕走**
 

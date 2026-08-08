@@ -1,0 +1,14 @@
+{
+  "description": "Claude Code through the recorder; reuses your own ~/.claude settings and auth.",
+  "command": "claude",
+  "recorder_base_url": "http://127.0.0.1:8787/claude",
+  "upstream_from": "claude-settings",
+  "supports_websocket": false,
+  "launch": {
+    "env": {
+      "ANTHROPIC_BASE_URL": "{{recorder_base_url}}",
+      "NO_PROXY": "127.0.0.1,localhost"
+    },
+    "args": []
+  }
+}

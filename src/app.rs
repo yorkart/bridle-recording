@@ -134,22 +134,6 @@ async fn health() -> &'static str {
 fn default_profile_root() -> std::path::PathBuf {
     std::env::var_os("BRIDLE_HOME_ROOT")
         .or_else(|| {
-            std::env::var_os("BRIDLE_AGENT_HOME").and_then(|path| {
-                std::path::PathBuf::from(path)
-                    .parent()
-                    .map(|parent| parent.to_path_buf())
-                    .map(|parent| parent.into_os_string())
-            })
-        })
-        .or_else(|| {
-            std::env::var_os("CODEX_HOME").and_then(|path| {
-                std::path::PathBuf::from(path)
-                    .parent()
-                    .map(|parent| parent.to_path_buf())
-                    .map(|parent| parent.into_os_string())
-            })
-        })
-        .or_else(|| {
             std::env::var_os("HOME").map(|home| {
                 std::path::PathBuf::from(home)
                     .join(".bridle-recording")
@@ -211,15 +195,15 @@ pub(crate) async fn load_profiles_with_claude_settings(
             continue;
         };
         let home_dir = entry.path();
-        let meta_path = home_dir.join("bridle-profile.toml");
+        let meta_path = home_dir.join("bridle-profile.json");
         if !fs::try_exists(&meta_path).await? {
             continue;
         }
         let raw = fs::read_to_string(&meta_path)
             .await
-            .with_context(|| format!("read {}", meta_path.display()))?;
-        let file: ProfileFile =
-            toml::from_str(&raw).with_context(|| format!("parse {}", meta_path.display()))?;
+            .with_context(|| format!("read profile {}", meta_path.display()))?;
+        let file: ProfileFile = serde_json::from_str(&raw)
+            .with_context(|| format!("parse {}", meta_path.display()))?;
         let upstream = resolve_profile_upstream(&file, &meta_path, claude_settings_path).await?;
         profiles.insert(
             name.clone(),

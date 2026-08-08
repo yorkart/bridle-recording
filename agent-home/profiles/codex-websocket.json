@@ -1,0 +1,30 @@
+{
+  "description": "Codex WebSocket traffic through the recorder; reuses your own ~/.codex home and auth.",
+  "command": "codex",
+  "agent_home": "~/.codex",
+  "recorder_base_url": "http://127.0.0.1:8787/codex-websocket",
+  "upstream": "https://chatgpt.com/backend-api/codex",
+  "supports_websocket": true,
+  "launch": {
+    "env": {
+      "CODEX_HOME": "{{agent_home}}",
+      "NO_PROXY": "127.0.0.1,localhost"
+    },
+    "args": [
+      "--config",
+      "model_provider=\"OpenAI\"",
+      "--config",
+      "model_providers.OpenAI.name=\"OpenAI\"",
+      "--config",
+      "model_providers.OpenAI.base_url=\"{{recorder_base_url}}\"",
+      "--config",
+      "model_providers.OpenAI.wire_api=\"responses\"",
+      "--config",
+      "model_providers.OpenAI.requires_openai_auth=true",
+      "--config",
+      "model_providers.OpenAI.supports_websockets=true",
+      "--config",
+      "features.responses_websockets_v2=true"
+    ]
+  }
+}

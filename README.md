@@ -54,123 +54,139 @@ The recorder contract is:
 - 100% verbatim header recording, including sensitive headers
 - raw request/response body recording without compatibility rewrites
 
-Each configured profile forwards requests to the upstream declared in that
-profile's `bridle-profile.toml`. A profile can also resolve its upstream from a
-supported local agent configuration, as the Claude profile does.
+## Profile Registry
 
-Recordings are written under the active profile home, for example
-`~/.bridle-recording/codex-http/recordings`.
+`~/.bridle-recording/` is now a configuration registry plus recording output.
+It does not contain copies of agent homes. Each profile is one directory that
+holds a small JSON config (`bridle-profile.json`) together with that profile's
+recording output:
+
+```text
+~/.bridle-recording/
+  codex-http/
+    bridle-profile.json
+    recordings/
+    derived/mock/
+  codex-websocket/
+    bridle-profile.json
+    recordings/
+  claude/
+    bridle-profile.json
+    recordings/
+  access.log
+```
+
+Each profile config carries two kinds of information:
+
+- recorder metadata: the real upstream (`upstream` or `upstream_from =
+  "claude-settings"`) and whether the profile supports websockets
+- launcher metadata: the agent `command`, the user's own `agent_home`, the
+  recorder entry point (`recorder_base_url`), and the overrides the launcher
+  applies (`launch.env`, `launch.args`)
+
+JSON has no comments, so templates carry a `description` field for humans; it
+is ignored by both the recorder and the launcher.
+
+The user's agent home is never copied. For Codex, `agent_home` points at your
+existing `~/.codex`; for Claude Code, the existing `~/.claude/settings.json` is
+reused as-is. Authentication, model settings, skills, and plugins all stay in
+your own home.
+
+Recordings are written under the active profile, for example
+`~/.bridle-recording/codex-http/recordings`, which is separate from the user's
+agent home.
 
 Mock-only indexes and optional response rewrite specifications are stored
 separately under `~/.bridle-recording/<profile>/derived/mock/`. Replay never
 writes `request_match.json`, `response_rewrite.json`, or other derived files
 into a recording session.
 
+## One-Time Setup
+
+Install the default registry entries (existing profile configs are
+overwritten):
+
+```sh
+./scripts/setup-profiles.sh
+```
+
+This creates
+`~/.bridle-recording/{codex-http,codex-websocket,claude}/bridle-profile.json`
+pointing at your own agent homes. Edit them if your home paths or recorder
+address differ.
+
 ## Start Codex For Recording
 
-The repository keeps agent home templates under `agent-home/`. These
-directories are intended to be copied into your local
-`~/.bridle-recording/` directory instead of being used in-place from the
-repository.
-
-`agent-home/codex-http/config.toml` is configured to route Codex through the
-recorder:
-
-```toml
-model_provider = "recorder-openai-http"
-
-[model_providers.recorder-openai-http]
-name = "OpenAI"
-base_url = "http://127.0.0.1:8787/codex-http"
-wire_api = "responses"
-requires_openai_auth = true
-```
-
-Create a local config directory, copy one of the templates, and copy your
-existing Codex auth state into it:
+One launcher serves every profile:
 
 ```sh
-install -d -m 700 ~/.bridle-recording
-cp -R agent-home/codex-http ~/.bridle-recording/
-install -m 600 ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
+./scripts/run-recorder.sh
+./scripts/run-agent.sh codex-http
 ```
 
-Then start Codex with that agent home:
+`run-agent.sh` is fully generic: it reads
+`~/.bridle-recording/codex-http/bridle-profile.json`, substitutes
+`{{recorder_base_url}}` / `{{agent_home}}` in the declared environment and
+arguments, exports the environment, and executes the agent with those
+arguments. For this profile the registry file declares the recorder provider
+through Codex `--config` flags on every launch. Parsing and assembly are done
+by a small Python helper (`python3` is required); the shell entry point stays
+`run-agent.sh`:
 
 ```sh
-./scripts/run-codex-http.sh
+--config 'model_provider="recorder-openai-http"'
+--config 'model_providers.recorder-openai-http.name="OpenAI"'
+--config 'model_providers.recorder-openai-http.base_url="http://127.0.0.1:8787/codex-http"'
+--config 'model_providers.recorder-openai-http.wire_api="responses"'
+--config 'model_providers.recorder-openai-http.requires_openai_auth=true'
 ```
 
-The helper script injects the `recorder-openai-http` provider and local recorder
-URL on every launch. This keeps traffic routed through the recorder even if
-Codex updates the profile's `config.toml`. It also sets
-`NO_PROXY=127.0.0.1,localhost` so local traffic to `http://127.0.0.1:8787` does
-not get sent back through your system proxy.
+Only the model address is redirected. Your own `~/.codex/config.toml`,
+authentication, skills, and plugins are untouched, and traffic still routes
+through the recorder even if Codex updates your home files.
 
 Equivalent manual command:
 
 ```sh
 NO_PROXY=127.0.0.1,localhost \
 no_proxy=127.0.0.1,localhost \
-BRIDLE_AGENT_HOME=~/.bridle-recording/codex-http \
-CODEX_HOME=~/.bridle-recording/codex-http \
-codex
+CODEX_HOME=~/.codex \
+codex \
+  --config 'model_provider="recorder-openai-http"' \
+  --config 'model_providers.recorder-openai-http.name="OpenAI"' \
+  --config 'model_providers.recorder-openai-http.base_url="http://127.0.0.1:8787/codex-http"' \
+  --config 'model_providers.recorder-openai-http.wire_api="responses"' \
+  --config 'model_providers.recorder-openai-http.requires_openai_auth=true'
 ```
-
-`BRIDLE_AGENT_HOME` is the neutral way to identify the active agent home.
-`CODEX_HOME` is still set here because Codex uses it to locate `config.toml`.
 
 `codex-http` is expected to use the recorder as a transparent proxy. If some
 upstream/provider combination cannot work without mutating live traffic, that
 scenario is outside the live recorder contract and should be handled by a
 separate offline or compatibility workflow.
 
-If you want the WebSocket-enabled variant instead, copy
-`agent-home/codex-websocket/` the same way:
+If you want the WebSocket-enabled variant instead, use the other registry
+entry:
 
 ```sh
-install -d -m 700 ~/.bridle-recording
-cp -R agent-home/codex-websocket ~/.bridle-recording/
-install -m 600 ~/.codex/auth.json ~/.bridle-recording/codex-websocket/auth.json
-
-./scripts/run-codex-websocket.sh
+./scripts/run-agent.sh codex-websocket
 ```
 
-Equivalent manual command:
-
-```sh
-NO_PROXY=127.0.0.1,localhost \
-no_proxy=127.0.0.1,localhost \
-BRIDLE_AGENT_HOME=~/.bridle-recording/codex-websocket \
-CODEX_HOME=~/.bridle-recording/codex-websocket \
-codex
-```
-
-`codex-websocket` now supports upstream proxy traversal through
+`codex-websocket` supports upstream proxy traversal through
 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` as well, so recorder-side WebSocket
 connections can use the same local proxy environment as HTTP forwarding.
 
-This layout leaves room for other agent homes later, for example:
-
-```text
-~/.bridle-recording/
-  codex-websocket/
-  codex-http/
-  claude/
-```
-
-Copying `auth.json` keeps your private credentials out of the repository while
-still letting the recorder use the same Codex login state.
+Additional agent profiles follow the same model: create a
+`~/.bridle-recording/<name>/bridle-profile.json` and launch it with
+`run-agent.sh <name>`.
 
 ## Start Claude Code For Recording
 
-Claude Code can reuse the existing user configuration at
-`~/.claude/settings.json` directly. No Claude profile or credential copy is
-required:
+Claude Code reuses the existing user configuration at `~/.claude/settings.json`
+directly. No Claude profile copy or credential copy is required:
 
 ```sh
 ./scripts/run-recorder.sh
-./scripts/run-claude.sh
+./scripts/run-agent.sh claude
 ```
 
 The integration has two independent configuration paths:
@@ -178,9 +194,9 @@ The integration has two independent configuration paths:
 - At startup the recorder discovers `~/.claude/settings.json` and reads the real
   upstream from `env.ANTHROPIC_BASE_URL`. If the setting is absent, it uses
   `https://api.anthropic.com`.
-- `run-claude.sh` passes an additional in-memory setting that overrides only
-  `ANTHROPIC_BASE_URL`, pointing Claude Code at
-  `http://127.0.0.1:8787/claude` for that process.
+- `run-agent.sh claude` reads the `claude` registry entry and overrides only
+  `ANTHROPIC_BASE_URL` for that process, pointing Claude Code at
+  `http://127.0.0.1:8787/claude`.
 
 Claude Code continues to load the original user settings, including
 `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`. The resulting `authorization` or
@@ -197,8 +213,8 @@ BRIDLE_CLAUDE_SETTINGS_PATH=/path/to/settings.json ./scripts/run-recorder.sh
 
 ## Multi-Profile Routing
 
-The recorder exposes one path prefix per agent profile. Today the built-in
-profiles are:
+The recorder exposes one path prefix per profile registry entry. Today the
+default profiles are:
 
 - `/codex-http`
 - `/codex-websocket`

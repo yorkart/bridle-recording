@@ -1,59 +1,60 @@
 # agent-home
 
-This directory contains local home templates for different agents.
+This directory contains the default profile registry templates. Each template
+is one JSON file describing a profile: the agent command, the user's own agent
+home, the recorder entry point, and the environment/argument overrides needed
+to redirect only the model address.
 
-Copy the Codex template you want into your local `~/.bridle-recording/`
-directory and add its corresponding auth file. Claude is auto-discovered from
-the existing user settings; its directory here is an optional reference
-template and does not need to be copied.
+The user's agent home is never copied. For Codex, `agent_home` points at your
+existing `~/.codex`; for Claude Code, the existing `~/.claude/settings.json` is
+reused as-is. Authentication, model settings, skills, and plugins all stay in
+your own home.
 
 Current templates:
 
-- `codex-http`: Codex home for HTTP Responses traffic through bridle-recording
-- `codex-websocket`: Codex home for WebSocket-enabled traffic through bridle-recording
-- `claude`: Claude Code profile using the existing `~/.claude/settings.json`
+- `codex-http.json`: Codex HTTP/Responses traffic -> `/codex-http`
+- `codex-websocket.json`: Codex WebSocket traffic -> `/codex-websocket`
+- `claude.json`: Claude Code -> `/claude`
 
-Each template points at a profile-prefixed base URL on the recorder:
+## Install
 
-- `codex-http` -> `http://127.0.0.1:8787/codex-http`
-- `codex-websocket` -> `http://127.0.0.1:8787/codex-websocket`
-- `claude` -> `http://127.0.0.1:8787/claude`
-
-Each profile directory also includes a `bridle-profile.toml` file used by the
-recorder server to discover which profiles are available locally, including the
-upstream URL or upstream source for that profile.
-
-Example:
+Copy the templates into your local registry (existing profile configs are
+overwritten):
 
 ```sh
-install -d -m 700 ~/.bridle-recording
-cp -R agent-home/codex-http ~/.bridle-recording/
-install -m 600 ~/.codex/auth.json ~/.bridle-recording/codex-http/auth.json
-
-./scripts/run-recorder.sh
-
-BRIDLE_AGENT_HOME=~/.bridle-recording/codex-http \
-CODEX_HOME=~/.bridle-recording/codex-http \
-codex
+./scripts/setup-profiles.sh
 ```
 
-Recorder contract:
+This installs each template as
+`~/.bridle-recording/<name>/bridle-profile.json`, so config and recordings stay
+in the same profile directory. Edit the installed files if your agent home or
+recorder address differs.
 
-- live traffic is forwarded as a transparent proxy
-- recording is sidecar-only and must not mutate traffic
-- headers are recorded verbatim, including sensitive headers
-- request and response bodies are recorded in raw form
+## Launch
 
-Additional agent profiles can follow the same directory layout.
-
-Claude example:
+One launcher serves every profile:
 
 ```sh
 ./scripts/run-recorder.sh
-./scripts/run-claude.sh
+./scripts/run-agent.sh codex-http
+./scripts/run-agent.sh claude
 ```
 
-The Claude launcher passes the equivalent of `recorder-settings.json` as an
-in-memory additional setting. The original `~/.claude/settings.json` remains
-active and supplies the user's authentication; only the process-local
-`ANTHROPIC_BASE_URL` is overridden.
+The launcher is fully generic: it reads
+`~/.bridle-recording/<name>/bridle-profile.json`, substitutes
+`{{recorder_base_url}}` / `{{agent_home}}` in the declared environment and
+arguments, exports the environment, and executes the command with those
+arguments. It does not know anything about a specific agent; adding a new
+agent is just adding one JSON file. Parsing is done by a small Python helper,
+so `python3` is required; set `BRIDLE_LAUNCH_DEBUG=1` to print the resolved
+launch values.
+
+## Adding a profile
+
+Create `~/.bridle-recording/<name>/bridle-profile.json` with the recorder metadata
+(`upstream` or `upstream_from`, `supports_websocket`) and launcher metadata
+(`command`, optional `agent_home` and `recorder_base_url`, `launch.env`, and
+`launch.args`). JSON has no comments, so use a `description` field for human
+notes. `launch.args` is a plain array of strings; use `\"` escapes inside a
+string when a value itself contains double quotes (for example Codex
+`--config` values). Restart the recorder to pick up new profiles.

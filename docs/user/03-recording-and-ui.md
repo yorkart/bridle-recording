@@ -13,7 +13,7 @@
 2. 启动已配置好的 Codex：
 
 ```sh
-./scripts/run-codex-http.sh
+./scripts/run-agent.sh codex-http
 ```
 
 3. 在 Codex 中发起一次普通交互。
